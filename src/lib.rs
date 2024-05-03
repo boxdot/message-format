@@ -21,7 +21,7 @@ const OTHER: &str = "other";
 pub struct MessageFormat {
     pattern: Option<String>,
     initial_literals: Vec<String>,
-    parsed_pattern: Option<Vec<Block>>,
+    parsed_pattern: Vec<Block>,
 }
 
 impl MessageFormat {
@@ -50,7 +50,33 @@ impl MessageFormat {
         named_parameters: Option<HashMap<String, String>>,
     ) -> String {
         self.init();
-        todo!()
+
+        if self.parsed_pattern.is_empty() {
+            return String::new();
+        }
+
+        let mut literals = self.initial_literals.clone();
+
+        let mut message_parts = Vec::new();
+        format_block(
+            &self.parsed_pattern,
+            named_parameters.as_ref().unwrap_or(&HashMap::new()),
+            &mut literals,
+            ignore_pound,
+            &mut message_parts,
+        );
+        let mut message = message_parts.join("");
+
+        if !ignore_pound {
+            assert!(message.contains('#'), "not all # were replaced");
+        }
+
+        while let Some(literal) = literals.pop() {
+            let placeholder = placeholder(literals.len());
+            message = message.replacen(&placeholder, &literal, 1);
+        }
+
+        message
     }
 
     fn init(&mut self) {
@@ -58,7 +84,7 @@ impl MessageFormat {
             self.initial_literals = Default::default();
             let pattern = self.insert_placeholders(pattern);
 
-            self.parsed_pattern = Some(self.parse_block(pattern));
+            self.parsed_pattern = self.parse_block(pattern);
         }
     }
 
@@ -66,20 +92,20 @@ impl MessageFormat {
         static DOUBLE_APOSTROPHE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"''").unwrap());
         static LITERAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"'([{}#].*?)'").unwrap());
 
-        let pattern = DOUBLE_APOSTROPHE_RE
-            .replace_all(&pattern, |_caps: &Captures| self.build_placeholder("'"));
-        let pattern =
-            LITERAL_RE.replace_all(&pattern, |caps: &Captures| self.build_placeholder(&caps[1]));
+        let pattern = DOUBLE_APOSTROPHE_RE.replace_all(&pattern, |_caps: &Captures| {
+            Self::build_placeholder(&mut self.initial_literals, "'")
+        });
+        let pattern = LITERAL_RE.replace_all(&pattern, |caps: &Captures| {
+            Self::build_placeholder(&mut self.initial_literals, &caps[1])
+        });
 
         pattern.into_owned()
     }
 
-    fn build_placeholder(&mut self, text: &str) -> String {
-        const LITERAL_PLACEHOLDER: char = '\u{FDDF}';
-
-        let idx = self.initial_literals.len();
-        self.initial_literals.push(text.to_owned());
-        format!("_{LITERAL_PLACEHOLDER}{idx}_")
+    fn build_placeholder(literals: &mut Vec<String>, text: &str) -> String {
+        let idx = literals.len();
+        literals.push(text.to_owned());
+        placeholder(idx)
     }
 
     fn parse_block(&mut self, pattern: String) -> Vec<Block> {
@@ -113,7 +139,7 @@ impl MessageFormat {
         let mut brace_stack: Vec<char> = Vec::new();
         let mut results: Vec<ElementTypeAndVal> = Vec::new();
 
-        for m in BRACES_RE.find_iter(&pattern) {
+        for m in BRACES_RE.find_iter(pattern) {
             let pos = m.start();
             if m.as_str() == "}" {
                 if let Some(brace) = brace_stack.pop() {
@@ -315,6 +341,183 @@ impl MessageFormat {
 
         result
     }
+}
+
+fn placeholder(idx: usize) -> String {
+    const LITERAL_PLACEHOLDER: &str = "\u{FDDF}_";
+    format!("_{LITERAL_PLACEHOLDER}{idx}_")
+}
+
+fn format_block(
+    parsed_blocks: &[Block],
+    named_parameters: &HashMap<String, String>,
+    literals: &mut Vec<String>,
+    ignore_pound: bool,
+    result: &mut Vec<String>,
+) {
+    for current_pattern in parsed_blocks {
+        match current_pattern {
+            Block::String(value) => {
+                result.push(value.clone());
+            }
+            Block::Simple(value) => {
+                format_simple_placeholder(value, named_parameters, literals, result);
+            }
+            Block::Select(map_pattern) => {
+                format_select_block(
+                    map_pattern,
+                    named_parameters,
+                    literals,
+                    ignore_pound,
+                    result,
+                );
+            }
+            Block::Plural(value) => {
+                format_plural_ordinal_block(
+                    value,
+                    named_parameters,
+                    literals,
+                    |n| Some(plural_rules_select(n)),
+                    ignore_pound,
+                    result,
+                );
+            }
+            Block::Ordinal(value) => {
+                format_plural_ordinal_block(
+                    value,
+                    named_parameters,
+                    literals,
+                    |n| Some(ordinal_rules_select(n)),
+                    ignore_pound,
+                    result,
+                );
+            }
+        }
+    }
+}
+
+fn format_simple_placeholder(
+    param: &str,
+    named_parameters: &HashMap<String, String>,
+    literals: &mut Vec<String>,
+    result: &mut Vec<String>,
+) {
+    let Some(value) = named_parameters.get(param) else {
+        result.push(format!("Undefined parameter - {param}"));
+        return;
+    };
+
+    // TODO: handle int formatting
+
+    let placeholder = placeholder(literals.len());
+    literals.push(value.to_string());
+    result.push(placeholder);
+}
+
+fn format_select_block(
+    parsed_blocks: &HashMap<String, Vec<Block>>,
+    named_parameters: &HashMap<String, String>,
+    literals: &mut Vec<String>,
+    ignore_pound: bool,
+    result: &mut Vec<String>,
+) {
+    let Some(Block::String(argument_name)) =
+        parsed_blocks.get("argumentName").and_then(|b| b.first())
+    else {
+        panic!("invalid argument name");
+    };
+
+    let Some(option) = parsed_blocks
+        .get(&named_parameters[argument_name])
+        .or_else(|| parsed_blocks.get(OTHER))
+    else {
+        panic!("Invalid option or missing other option for select block");
+    };
+
+    format_block(option, named_parameters, literals, ignore_pound, result);
+}
+
+fn format_plural_ordinal_block(
+    parsed_blocks: &HashMap<String, Vec<Block>>,
+    named_parameters: &HashMap<String, String>,
+    literals: &mut Vec<String>,
+    plural_selector: impl Fn(u64) -> Option<&'static str>, // TODO: add locale
+    ignore_pound: bool,
+    result: &mut Vec<String>,
+) {
+    let Some(Block::String(argument_name)) =
+        parsed_blocks.get("argumentName").and_then(|b| b.first())
+    else {
+        panic!("invalid argument name");
+    };
+    let Some(Block::String(argument_offset)) =
+        parsed_blocks.get("argumentOffset").and_then(|b| b.first())
+    else {
+        panic!("invalid argument offset");
+    };
+
+    let Some(plural_value) = named_parameters.get(argument_name) else {
+        result.push(format!("Undefined parameter - {argument_name}"));
+        return;
+    };
+
+    let Ok(plural_value) = plural_value.parse::<i64>() else {
+        result.push(format!("Invalid parameter - {argument_name}"));
+        return;
+    };
+
+    let Ok(argument_offset) = argument_offset.parse::<i64>() else {
+        result.push(format!("Invalid offset - {argument_offset}"));
+        return;
+    };
+
+    let diff = plural_value - argument_offset;
+
+    let option = match parsed_blocks.get(&named_parameters[argument_name]) {
+        Some(option) => option,
+        None => {
+            let diff: u64 = diff.abs().try_into().unwrap();
+            let item = plural_selector(diff).expect("Invalid plural key");
+            let Some(option) = parsed_blocks.get(item).or_else(|| parsed_blocks.get(OTHER)) else {
+                panic!("Invalid option or missing other option for plural block");
+            };
+            option
+        }
+    };
+
+    let mut plural_result = Vec::new();
+    format_block(
+        option,
+        named_parameters,
+        literals,
+        ignore_pound,
+        &mut plural_result,
+    );
+    let plural = plural_result.join("");
+    if ignore_pound {
+        result.push(plural);
+    } else {
+        // TODO: locale aware formatting
+        let diff = diff.to_string();
+        result.push(plural.replace('#', &diff));
+    }
+}
+
+fn plural_rules_select(n: u64) -> &'static str {
+    // TODO: make locale aware
+    match n {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        3..=5 => "few",
+        6.. => "many",
+    }
+}
+
+fn ordinal_rules_select(n: u64) -> &'static str {
+    // Ordinals are not supported
+    // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
+    plural_rules_select(n)
 }
 
 fn next_char_index(s: &str) -> usize {
