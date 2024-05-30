@@ -1,5 +1,11 @@
+use core::fmt;
 use std::collections::HashMap;
 
+use icu::{
+    locid::Locale,
+    plurals::{PluralCategory, PluralRules},
+};
+use icu_decimal::FixedDecimalFormatter;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
@@ -20,14 +26,54 @@ pub struct MessageFormat {
     pattern: Option<String>,
     initial_literals: Vec<String>,
     parsed_pattern: Vec<Block>,
+    locale: Locale,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum ParamValue {
+    Int(i64),
+    String(String),
+}
+
+impl From<i64> for ParamValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<String> for ParamValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&'static str> for ParamValue {
+    fn from(value: &'static str) -> Self {
+        value.to_owned().into()
+    }
+}
+
+impl fmt::Display for ParamValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParamValue::Int(value) => write!(f, "{}", value),
+            ParamValue::String(value) => f.write_str(value),
+        }
+    }
 }
 
 impl MessageFormat {
     pub fn new(pattern: impl Into<String>) -> Self {
+        let locale = icu::locid::locale!("en-US");
+        Self::with_locale(pattern, locale)
+    }
+
+    pub fn with_locale(pattern: impl Into<String>, locale: Locale) -> Self {
         Self {
             pattern: Some(pattern.into()),
             initial_literals: Default::default(),
             parsed_pattern: Default::default(),
+            locale,
         }
     }
 
@@ -37,14 +83,14 @@ impl MessageFormat {
 
     pub fn format_with_params(
         &mut self,
-        named_parameters: impl IntoIterator<Item = (impl Into<String>, impl ToString)>,
+        named_parameters: impl IntoIterator<Item = (impl Into<String>, ParamValue)>,
     ) -> String {
         self.format_impl(
             false,
             Some(
                 named_parameters
                     .into_iter()
-                    .map(|(k, v)| (k.into(), v.to_string()))
+                    .map(|(k, v)| (k.into(), v))
                     .collect(),
             ),
         )
@@ -52,14 +98,14 @@ impl MessageFormat {
 
     pub fn format_ignoring_pound(
         &mut self,
-        named_parameters: impl IntoIterator<Item = (impl Into<String>, impl ToString)>,
+        named_parameters: impl IntoIterator<Item = (impl Into<String>, ParamValue)>,
     ) -> String {
         self.format_impl(
             true,
             Some(
                 named_parameters
                     .into_iter()
-                    .map(|(k, v)| (k.into(), v.to_string()))
+                    .map(|(k, v)| (k.into(), v))
                     .collect(),
             ),
         )
@@ -68,11 +114,9 @@ impl MessageFormat {
     fn format_impl(
         &mut self,
         ignore_pound: bool,
-        named_parameters: Option<HashMap<String, String>>,
+        named_parameters: Option<HashMap<String, ParamValue>>,
     ) -> String {
         self.init();
-        dbg!(&self);
-        dbg!(&named_parameters);
 
         if self.parsed_pattern.is_empty() {
             return String::new();
@@ -82,6 +126,7 @@ impl MessageFormat {
 
         let mut message_parts = Vec::new();
         format_block(
+            &self.locale,
             &self.parsed_pattern,
             named_parameters.as_ref().unwrap_or(&HashMap::new()),
             &mut literals,
@@ -134,7 +179,6 @@ impl MessageFormat {
     fn parse_block(&mut self, pattern: String) -> Vec<Block> {
         let mut result = Vec::new();
         let parts = self.extract_parts(&pattern);
-        dbg!(&parts);
         for part in parts {
             let block = match part.typ {
                 ElementType::String => Block::String(part.value),
@@ -218,7 +262,8 @@ impl MessageFormat {
         }
     }
 
-    fn parse_select_block(&mut self, pattern: &str) -> HashMap<String, Vec<Block>> {
+    fn parse_select_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
+        dbg!(pattern);
         let mut argument_name = None;
         let pattern = SELECT_BLOCK_RE.replace(pattern, |caps: &Captures| {
             // string, name
@@ -228,7 +273,7 @@ impl MessageFormat {
 
         let mut result = HashMap::new();
         result.insert(
-            "argumentName".to_owned(),
+            "argumentName".to_owned().into(),
             vec![Block::String(argument_name.expect("logic error"))],
         );
 
@@ -250,20 +295,25 @@ impl MessageFormat {
             };
 
             let key = WHITESPACES_RE.replace_all(key, "");
-            result.insert(key.into_owned(), value);
+            let key = match key.parse::<i64>() {
+                Ok(num) => num.into(),
+                Err(_) => key.into_owned().into(),
+            };
+            dbg!(&key);
+            result.insert(key, value);
 
             pos += 1;
         }
 
         assert!(
-            result.contains_key(OTHER),
+            result.contains_key(&OTHER.into()),
             "missing other key in select statement"
         );
 
         result
     }
 
-    fn parse_plural_block(&mut self, pattern: &str) -> HashMap<String, Vec<Block>> {
+    fn parse_plural_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
         let mut argument_name = None;
         let mut argument_offset = 0;
         let pattern = PLURAL_BLOCK_RE.replace(pattern, |caps: &Captures| {
@@ -276,11 +326,11 @@ impl MessageFormat {
 
         let mut result = HashMap::new();
         result.insert(
-            "argumentName".to_owned(),
+            "argumentName".to_owned().into(),
             vec![Block::String(argument_name.unwrap())],
         );
         result.insert(
-            "argumentOffset".to_owned(),
+            "argumentOffset".to_owned().into(),
             vec![Block::String(argument_offset.to_string())],
         );
 
@@ -302,20 +352,24 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            result.insert(key.into_owned(), value);
+            let key = match key.parse::<i64>() {
+                Ok(num) => num.into(),
+                Err(_) => key.into_owned().into(),
+            };
+            result.insert(dbg!(key), value);
 
             pos += 1;
         }
 
         assert!(
-            result.contains_key(OTHER),
+            result.contains_key(&OTHER.into()),
             "missing other key in plural statement"
         );
 
         result
     }
 
-    fn parse_ordinal_block(&mut self, pattern: &str) -> HashMap<String, Vec<Block>> {
+    fn parse_ordinal_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
         let mut argument_name = None;
         let pattern = ORDINAL_BLOCK_RE.replace(pattern, |caps: &Captures| {
             argument_name = Some(caps[1].to_owned());
@@ -324,11 +378,11 @@ impl MessageFormat {
 
         let mut result = HashMap::new();
         result.insert(
-            "argumentName".to_string(),
+            "argumentName".to_owned().into(),
             vec![Block::String(argument_name.unwrap())],
         );
         result.insert(
-            "argumentOffset".to_string(),
+            "argumentOffset".to_owned().into(),
             vec![Block::String("0".to_owned())],
         );
 
@@ -353,13 +407,17 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            result.insert(key.into_owned(), value);
+            let key = match key.parse::<i64>() {
+                Ok(num) => num.into(),
+                Err(_) => key.into_owned().into(),
+            };
+            result.insert(key, value);
 
             pos += 1;
         }
 
         assert!(
-            result.contains_key(OTHER),
+            result.contains_key(&OTHER.into()),
             "missing other key in ordinal statement"
         );
 
@@ -373,8 +431,9 @@ fn placeholder(idx: usize) -> String {
 }
 
 fn format_block(
+    locale: &Locale,
     parsed_blocks: &[Block],
-    named_parameters: &HashMap<String, String>,
+    named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
     ignore_pound: bool,
     result: &mut Vec<String>,
@@ -385,10 +444,11 @@ fn format_block(
                 result.push(value.clone());
             }
             Block::Simple(value) => {
-                format_simple_placeholder(value, named_parameters, literals, result);
+                format_simple_placeholder(locale, value, named_parameters, literals, result);
             }
             Block::Select(map_pattern) => {
                 format_select_block(
+                    locale,
                     map_pattern,
                     named_parameters,
                     literals,
@@ -398,20 +458,22 @@ fn format_block(
             }
             Block::Plural(value) => {
                 format_plural_ordinal_block(
+                    locale,
                     value,
                     named_parameters,
                     literals,
-                    |n| Some(plural_rules_select(n)),
+                    |n, locale| plural_rules_select(n, locale),
                     ignore_pound,
                     result,
                 );
             }
             Block::Ordinal(value) => {
                 format_plural_ordinal_block(
+                    locale,
                     value,
                     named_parameters,
                     literals,
-                    |n| Some(ordinal_rules_select(n)),
+                    |n, locale| ordinal_rules_select(n, locale),
                     ignore_pound,
                     result,
                 );
@@ -421,8 +483,9 @@ fn format_block(
 }
 
 fn format_simple_placeholder(
+    locale: &Locale,
     param: &str,
-    named_parameters: &HashMap<String, String>,
+    named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
     result: &mut Vec<String>,
 ) {
@@ -431,22 +494,30 @@ fn format_simple_placeholder(
         return;
     };
 
-    // TODO: handle int formatting
+    let fdf =
+        FixedDecimalFormatter::try_new(&locale.into(), Default::default()).expect("missing locale");
+
+    let value = match value {
+        ParamValue::Int(value) => fdf.format_to_string(&(*value).into()),
+        ParamValue::String(value) => value.clone(),
+    };
 
     let placeholder = placeholder(literals.len());
-    literals.push(value.to_string());
+    literals.push(value);
     result.push(placeholder);
 }
 
 fn format_select_block(
-    parsed_blocks: &HashMap<String, Vec<Block>>,
-    named_parameters: &HashMap<String, String>,
+    locale: &Locale,
+    parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
+    named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
     ignore_pound: bool,
     result: &mut Vec<String>,
 ) {
-    let Some(Block::String(argument_name)) =
-        parsed_blocks.get("argumentName").and_then(|b| b.first())
+    let Some(Block::String(argument_name)) = parsed_blocks
+        .get(&"argumentName".to_owned().into())
+        .and_then(|b| b.first())
     else {
         panic!("invalid argument name");
     };
@@ -458,29 +529,40 @@ fn format_select_block(
 
     let Some(option) = parsed_blocks
         .get(param)
-        .or_else(|| parsed_blocks.get(OTHER))
+        .or_else(|| parsed_blocks.get(&OTHER.into()))
     else {
         panic!("Invalid option or missing other option for select block");
     };
 
-    format_block(option, named_parameters, literals, ignore_pound, result);
+    format_block(
+        locale,
+        option,
+        named_parameters,
+        literals,
+        ignore_pound,
+        result,
+    );
 }
 
 fn format_plural_ordinal_block(
-    parsed_blocks: &HashMap<String, Vec<Block>>,
-    named_parameters: &HashMap<String, String>,
+    locale: &Locale,
+    parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
+    named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
-    plural_selector: impl Fn(u64) -> Option<&'static str>, // TODO: add locale
+    plural_selector: impl Fn(u64, &Locale) -> Option<&'static str>, // TODO: add locale
     ignore_pound: bool,
     result: &mut Vec<String>,
 ) {
-    let Some(Block::String(argument_name)) =
-        parsed_blocks.get("argumentName").and_then(|b| b.first())
+    dbg!(named_parameters);
+    let Some(Block::String(argument_name)) = parsed_blocks
+        .get(&"argumentName".into())
+        .and_then(|b| b.first())
     else {
         panic!("invalid argument name");
     };
-    let Some(Block::String(argument_offset)) =
-        parsed_blocks.get("argumentOffset").and_then(|b| b.first())
+    let Some(Block::String(argument_offset)) = parsed_blocks
+        .get(&"argumentOffset".into())
+        .and_then(|b| b.first())
     else {
         panic!("invalid argument offset");
     };
@@ -489,8 +571,9 @@ fn format_plural_ordinal_block(
         result.push(format!("Undefined parameter - {argument_name}"));
         return;
     };
+    dbg!(&plural_value);
 
-    let Ok(plural_value) = plural_value.parse::<i64>() else {
+    let ParamValue::Int(plural_value) = plural_value else {
         result.push(format!("Invalid parameter - {argument_name}"));
         return;
     };
@@ -501,13 +584,20 @@ fn format_plural_ordinal_block(
     };
 
     let diff = plural_value - argument_offset;
+    dbg!(&named_parameters, &argument_name);
+    dbg!(&parsed_blocks);
 
     let option = match parsed_blocks.get(&named_parameters[argument_name]) {
         Some(option) => option,
         None => {
             let diff: u64 = diff.abs().try_into().unwrap();
-            let item = plural_selector(diff).expect("Invalid plural key");
-            let Some(option) = parsed_blocks.get(item).or_else(|| parsed_blocks.get(OTHER)) else {
+            dbg!(diff);
+            let item = plural_selector(diff, locale).expect("Invalid plural key");
+            dbg!(&item);
+            let Some(option) = parsed_blocks
+                .get(&item.to_owned().into())
+                .or_else(|| parsed_blocks.get(&OTHER.into()))
+            else {
                 panic!("Invalid option or missing other option for plural block");
             };
             option
@@ -516,6 +606,7 @@ fn format_plural_ordinal_block(
 
     let mut plural_result = Vec::new();
     format_block(
+        locale,
         option,
         named_parameters,
         literals,
@@ -526,34 +617,38 @@ fn format_plural_ordinal_block(
     if ignore_pound {
         result.push(plural);
     } else {
-        // TODO: locale aware formatting
-        let diff = diff.to_string();
+        let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
+            .expect("missing locale");
+        let diff = fdf.format_to_string(&diff.into());
         result.push(plural.replace('#', &diff));
     }
 }
 
-fn plural_rules_select(n: u64) -> &'static str {
-    // TODO: make locale aware
-    match n {
-        0 => "zero",
-        1 => "one",
-        2 => "two",
-        3..=5 => "few",
-        6.. => "many",
+fn plural_rules_select(n: u64, locale: &Locale) -> Option<&'static str> {
+    let rule = PluralRules::try_new(&locale.into(), icu::plurals::PluralRuleType::Cardinal)
+        .expect("missing locale");
+    dbg!(locale);
+    match dbg!(rule.category_for(n)) {
+        PluralCategory::Zero => Some("zero"),
+        PluralCategory::One => Some("one"),
+        PluralCategory::Two => Some("two"),
+        PluralCategory::Few => Some("few"),
+        PluralCategory::Many => Some("many"),
+        PluralCategory::Other => Some("many"),
     }
 }
 
-fn ordinal_rules_select(n: u64) -> &'static str {
+fn ordinal_rules_select(n: u64, locale: &Locale) -> Option<&'static str> {
     // Ordinals are not supported
     // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
-    plural_rules_select(n)
+    plural_rules_select(n, locale)
 }
 
 #[derive(Debug)]
 enum Block {
-    Select(HashMap<String, Vec<Block>>),
-    Plural(HashMap<String, Vec<Block>>),
-    Ordinal(HashMap<String, Vec<Block>>),
+    Select(HashMap<ParamValue, Vec<Block>>),
+    Plural(HashMap<ParamValue, Vec<Block>>),
+    Ordinal(HashMap<ParamValue, Vec<Block>>),
     String(String),
     Simple(String),
 }
@@ -589,6 +684,8 @@ enum ElementType {
 
 #[cfg(test)]
 mod tests {
+    use icu::locid::locale;
+
     use super::*;
 
     #[test]
@@ -615,7 +712,7 @@ mod tests {
     fn test_simple_replacement() {
         let mut fmt = MessageFormat::new("New York in {SEASON} is nice.");
         assert_eq!(
-            fmt.format_with_params([("SEASON", "the Summer")]),
+            fmt.format_with_params([("SEASON", "the Summer".into())]),
             "New York in the Summer is nice."
         );
     }
@@ -630,19 +727,19 @@ mod tests {
             bicycle is {GENDER, select, male {blue} female {red} other {green}}.",
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male")]),
+            fmt.format_with_params([("GENDER", "male".into())]),
             "His bicycle is blue."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female")]),
+            fmt.format_with_params([("GENDER", "female".into())]),
             "Her bicycle is red."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "other")]),
+            fmt.format_with_params([("GENDER", "other".into())]),
             "Their bicycle is green."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "any")]),
+            fmt.format_with_params([("GENDER", "any".into())]),
             "Their bicycle is green."
         );
     }
@@ -657,32 +754,35 @@ mod tests {
             other {{PERSON} and # other people in {PLACE}.}}",
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", "0"), ("PLACE", "Belgrade")]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Belgrade".into())]),
             "I see no one at all in Belgrade."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "1"),
-                ("PERSON", "Markus"),
-                ("PLACE", "Berlin")
+                ("NUM_PEOPLE", 1.into()),
+                ("PERSON", "Markus".into()),
+                ("PLACE", "Berlin".into())
             ]),
             "I see Markus in Berlin."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", "2"), ("PERSON", "Mark"), ("PLACE", "Athens")]),
+            fmt.format_with_params([
+                ("NUM_PEOPLE", 2.into()),
+                ("PERSON", "Mark".into()),
+                ("PLACE", "Athens".into())
+            ]),
             "I see Mark and one other person in Athens."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "100"),
-                ("PERSON", "Cibu"),
-                ("PLACE", "the cubes")
+                ("NUM_PEOPLE", 100.into()),
+                ("PERSON", "Cibu".into()),
+                ("PLACE", "the cubes".into())
             ]),
             "I see Cibu and 99 other people in the cubes."
         );
     }
 
-    #[ignore = "needs decimal formatting"]
     #[test]
     fn test_select_nested_in_plural() {
         let mut fmt = MessageFormat::new(
@@ -695,16 +795,23 @@ mod tests {
           other  {{WHO} added you to his # circles}}}}",
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female"), ("WHO", "Jelena"), ("CIRCLES", "1")]),
+            fmt.format_with_params([
+                ("GENDER", "female".into()),
+                ("WHO", "Jelena".into()),
+                ("CIRCLES", 1.into())
+            ]),
             "Jelena added you to her circle",
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male"), ("WHO", "Milan"), ("CIRCLES", "1234")]),
+            fmt.format_with_params([
+                ("GENDER", "male".into()),
+                ("WHO", "Milan".into()),
+                ("CIRCLES", 1234.into())
+            ]),
             "Milan added you to his 1,234 circles",
         );
     }
 
-    #[ignore = "needs decimal formatting"]
     #[test]
     fn test_plural_nested_in_select() {
         // Added offset just for testing purposes. It doesn't make sense to have it otherwise.
@@ -719,12 +826,20 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female"), ("WHO", "Jelena"), ("NUM_GROUPS", "1")]),
+            fmt.format_with_params([
+                ("GENDER", "female".into()),
+                ("WHO", "Jelena".into()),
+                ("NUM_GROUPS", 1.into())
+            ]),
             "Jelena added you to her group",
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male"), ("WHO", "Milan"), ("NUM_GROUPS", "1234")]),
-            "Milan added you to his 1,233 groups",
+            fmt.format_with_params([
+                ("GENDER", "male".into()),
+                ("WHO", "Milan".into()),
+                ("NUM_GROUPS", 1234.into())
+            ]),
+            "Milan added you to his 1,234 groups",
         );
     }
 
@@ -733,7 +848,7 @@ mod tests {
         let mut fmt =
             MessageFormat::new("Anna's house has '{0} and # in the roof' and {NUM_COWS} cows.");
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "5")]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
     }
@@ -743,11 +858,11 @@ mod tests {
         let mut fmt =
             MessageFormat::new("Anna's house has '{'0'} and # in the roof' and {NUM_COWS} cows.");
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "5")]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "8")]),
+            fmt.format_with_params([("NUM_COWS", 8.into())]),
             "Anna's house has {0} and # in the roof and 8 cows."
         );
     }
@@ -757,11 +872,11 @@ mod tests {
         let mut fmt =
             MessageFormat::new("Anna's house has '{0}' and '# in the roof' and {NUM_COWS} cows.");
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "5")]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "10")]),
+            fmt.format_with_params([("NUM_COWS", 10.into())]),
             "Anna's house has {0} and # in the roof and 10 cows."
         );
     }
@@ -770,7 +885,7 @@ mod tests {
     fn test_no_literals_for_single_quotes() {
         let mut fmt = MessageFormat::new("Anna's house 'has {NUM_COWS} cows'.");
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", "5")]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house 'has 5 cows'."
         );
     }
@@ -784,7 +899,7 @@ mod tests {
     #[test]
     fn test_test_consecutive_single_quotes_before_special_char_dont_create_literal() {
         let mut fmt = MessageFormat::new("a''{NUM_COWS}'b");
-        assert_eq!(fmt.format_with_params([("NUM_COWS", "5")]), "a'5'b");
+        assert_eq!(fmt.format_with_params([("NUM_COWS", 5.into())]), "a'5'b");
     }
 
     #[ignore = "needs locale support"]
@@ -796,20 +911,19 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male")]),
+            fmt.format_with_params([("GENDER", "male".into())]),
             "Njegov bicikl je plav."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female")]),
+            fmt.format_with_params([("GENDER", "female".into())]),
             "Njen bicikl je crven."
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_serbian_simple_plural() {
-        let mut fmt = MessageFormat::new(
-            "Ja {NUM_PEOPLE, plural, offset,1 \
+        let mut fmt = MessageFormat::with_locale(
+            "Ja {NUM_PEOPLE, plural, offset:1 \
             =0 {ne vidim nikoga} \
             =1 {vidim {PERSON}} \
             one {vidim {PERSON} i jos # osobu} \
@@ -817,37 +931,42 @@ mod tests {
             many {vidim {PERSON} i jos # osoba} \
             other {vidim {PERSON} i jos # osoba}} \
           u {PLACE}.",
+            locale!("sr"),
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", "0"), ("PLACE", "Beogradu")]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())]),
             "Ja ne vidim nikoga u Beogradu."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "1"),
-                ("PERSON", "Markusa"),
-                ("PLACE", "Berlinu")
+                ("NUM_PEOPLE", 1.into()),
+                ("PERSON", "Markusa".into()),
+                ("PLACE", "Berlinu".into())
             ]),
             "Ja vidim Markusa u Berlinu."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", "2"), ("PERSON", "Marka"), ("PLACE", "Atini")]),
+            fmt.format_with_params([
+                ("NUM_PEOPLE", 2.into()),
+                ("PERSON", "Marka".into()),
+                ("PLACE", "Atini".into())
+            ]),
             "Ja vidim Marka i jos 1 osobu u Atini."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "4"),
-                ("PERSON", "Petra"),
-                ("PLACE", "muzeju")
+                ("NUM_PEOPLE", 4.into()),
+                ("PERSON", "Petra".into()),
+                ("PLACE", "muzeju".into())
             ]),
             "Ja vidim Petra i jos 3 osobe u muzeju."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "100"),
-                ("PERSON", "Cibua"),
-                ("PLACE", "bazenu")
+                ("NUM_PEOPLE", 100.into()),
+                ("PERSON", "Cibua".into()),
+                ("PLACE", "bazenu".into())
             ]),
             "Ja vidim Cibua i jos 99 osoba u bazenu."
         );
@@ -856,7 +975,7 @@ mod tests {
     #[ignore = "needs locale support"]
     #[test]
     fn test_test_serbian_simple_plural_no_offset() {
-        let mut fmt = MessageFormat::new(
+        let mut fmt = MessageFormat::with_locale(
             "Ja {NUM_PEOPLE, plural, \
             =0 {ne vidim nikoga} \
             =1 {vidim {PERSON}} \
@@ -865,41 +984,42 @@ mod tests {
             many {vidim {PERSON} i jos # osoba} \
             other {vidim {PERSON} i jos # osoba}} \
           u {PLACE}.",
+            locale!("sr"),
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", "0"), ("PLACE", "Beogradu")]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())]),
             "Ja ne vidim nikoga u Beogradu."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "1"),
-                ("PERSON", "Markusa"),
-                ("PLACE", "Berlinu")
+                ("NUM_PEOPLE", 1.into()),
+                ("PERSON", "Markusa".into()),
+                ("PLACE", "Berlinu".into())
             ]),
             "Ja vidim Markusa u Berlinu."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "21"),
-                ("PERSON", "Marka"),
-                ("PLACE", "Atini")
+                ("NUM_PEOPLE", 21.into()),
+                ("PERSON", "Marka".into()),
+                ("PLACE", "Atini".into())
             ]),
             "Ja vidim Marka i jos 21 osobu u Atini."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "3"),
-                ("PERSON", "Petra"),
-                ("PLACE", "muzeju")
+                ("NUM_PEOPLE", 3.into()),
+                ("PERSON", "Petra".into()),
+                ("PLACE", "muzeju".into())
             ]),
             "Ja vidim Petra i jos 3 osobe u muzeju."
         );
         assert_eq!(
             fmt.format_with_params([
-                ("NUM_PEOPLE", "100"),
-                ("PERSON", "Cibua"),
-                ("PLACE", "bazenu")
+                ("NUM_PEOPLE", 100.into()),
+                ("PERSON", "Cibua".into()),
+                ("PLACE", "bazenu".into())
             ]),
             "Ja vidim Cibua i jos 100 osoba u bazenu."
         );
@@ -908,7 +1028,7 @@ mod tests {
     #[ignore = "needs locale support"]
     #[test]
     fn test_test_serbian_select_nested_in_plural() {
-        let mut fmt = MessageFormat::new(
+        let mut fmt = MessageFormat::with_locale(
             "{CIRCLES, plural, \
             one {{GENDER, select, \
               female {{WHO} vas je dodala u njen # kruzok} \
@@ -922,22 +1042,39 @@ mod tests {
             other {{GENDER, select, \
               female {{WHO} vas je dodala u njenih # kruzoka} \
               other  {{WHO} vas je dodao u njegovih # kruzoka}}}}",
+            locale!("sr"),
         );
 
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female"), ("WHO", "Jelena"), ("CIRCLES", "21")]),
+            fmt.format_with_params([
+                ("GENDER", "female".into()),
+                ("WHO", "Jelena".into()),
+                ("CIRCLES", 21.into())
+            ]),
             "Jelena vas je dodala u njen 21 kruzok"
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female"), ("WHO", "Jelena"), ("CIRCLES", "3")]),
+            fmt.format_with_params([
+                ("GENDER", "female".into()),
+                ("WHO", "Jelena".into()),
+                ("CIRCLES", 3.into())
+            ]),
             "Jelena vas je dodala u njena 3 kruzoka"
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female"), ("WHO", "Jelena"), ("CIRCLES", "5")]),
+            fmt.format_with_params([
+                ("GENDER", "female".into()),
+                ("WHO", "Jelena".into()),
+                ("CIRCLES", 5.into())
+            ]),
             "Jelena vas je dodala u njenih 5 kruzoka"
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male"), ("WHO", "Milan"), ("CIRCLES", "1235")]),
+            fmt.format_with_params([
+                ("GENDER", "male".into()),
+                ("WHO", "Milan".into()),
+                ("CIRCLES", 1235.into())
+            ]),
             "Milan vas je dodao u njegovih 1.235 kruzoka"
         );
     }
@@ -948,21 +1085,34 @@ mod tests {
         // Use Arabic plural rules since they have all six cases.
         // Only locale and numbers matter, the actual language of the message
         // does not.
-        let mut fmt = MessageFormat::new(
-            "{NUM_MINUTES, plural, other {# minutes}}", /*, locale, "ar"*/
+        let mut fmt = MessageFormat::with_locale(
+            "{NUM_MINUTES, plural, other {# minutes}}",
+            locale!("ar-DZ"),
         );
 
         // These numbers exercise all cases for the arabic plural rules.
-        assert_eq!(fmt.format_with_params([("NUM_MINUTES", "0")]), "0 minutes");
-        assert_eq!(fmt.format_with_params([("NUM_MINUTES", "1")]), "1 minutes");
-        assert_eq!(fmt.format_with_params([("NUM_MINUTES", "2")]), "2 minutes");
-        assert_eq!(fmt.format_with_params([("NUM_MINUTES", "3")]), "3 minutes");
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", "11")]),
+            fmt.format_with_params([("NUM_MINUTES", 0.into())]),
+            "0 minutes"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_MINUTES", 1.into())]),
+            "1 minutes"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_MINUTES", 2.into())]),
+            "2 minutes"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_MINUTES", 3.into())]),
+            "3 minutes"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_MINUTES", 11.into())]),
             "11 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", "1.5")]),
+            fmt.format_with_params([("NUM_MINUTES", "1.5".into())]),
             "1.5 minutes"
         );
     }
@@ -973,10 +1123,10 @@ mod tests {
             "{SOME_NUM, plural, offset:1 =0 {#} =1 {#} =2 {#} one {#} other {#}}",
         );
 
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "0")]), "-1");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "1")]), "0");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "2")]), "1");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "21")]), "20");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "-1");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 1.into())]), "0");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 2.into())]), "1");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 21.into())]), "20");
     }
 
     #[test]
@@ -985,12 +1135,12 @@ mod tests {
 
         // Test pound sign.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "10"), ("GROUP", "group#1")]),
+            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())]),
             "10 group#1"
         );
         // Test other special characters in parameters, like { and }.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "10"), ("GROUP", "} {")]),
+            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "} {".into())]),
             "10 } {"
         );
     }
@@ -1001,13 +1151,13 @@ mod tests {
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
-            fmt.format_with_params([("A", "10")]),
+            fmt.format_with_params([("A", 10.into())]),
             "Undefined parameter - SOME_NUM"
         );
 
         // Value is not a number.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "Value")]),
+            fmt.format_with_params([("SOME_NUM", "Value".into())]),
             "Invalid parameter - SOME_NUM"
         );
     }
@@ -1018,7 +1168,7 @@ mod tests {
 
         // Key name doesn"t match A != GENDER.
         assert_eq!(
-            fmt.format_with_params([("A", "female")]),
+            fmt.format_with_params([("A", "female".into())]),
             "Undefined parameter - GENDER"
         );
     }
@@ -1029,7 +1179,7 @@ mod tests {
 
         // Key name doesn"t match A != result.
         assert_eq!(
-            fmt.format_with_params([("A", "none")]),
+            fmt.format_with_params([("A", "none".into())]),
             "Undefined parameter - result"
         );
     }
@@ -1037,7 +1187,7 @@ mod tests {
     #[ignore = "needs locale support"]
     #[test]
     fn test_test_plural() {
-        let mut fmt = MessageFormat::new(
+        let mut fmt = MessageFormat::with_locale(
             "{SOME_NUM, plural,\
             =0 {none}\
             =1 {exactly one}\
@@ -1046,19 +1196,33 @@ mod tests {
             many {# many}\
             other {# other}\
           }",
-            // locale,
-            // "ru",
+            locale!("ru"),
         );
 
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 0)]), "none");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 1)]), "exactly one");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 21)]), "21 one");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 23)]), "23 few");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 17)]), "17 many");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 100)]), "100 many");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 1.4)]), "1,4 other");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "10.0")]), "10 many");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", "100.00")]), "100 many");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "none");
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 1.into())]),
+            "exactly one"
+        );
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 21.into())]), "21 one");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 23.into())]), "23 few");
+        assert_eq!(fmt.format_with_params([("SOME_NUM", 17.into())]), "17 many");
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 100.into())]),
+            "100 many"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", "1.4".into())]),
+            "1,4 other"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", "10.0".into())]),
+            "10 many"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", "100.00".into())]),
+            "100 many"
+        );
     }
 
     #[test]
@@ -1067,12 +1231,12 @@ mod tests {
 
         // Test pound sign.
         assert_eq!(
-            fmt.format_ignoring_pound([("SOME_NUM", "10"), ("GROUP", "group#1")]),
+            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())]),
             "# group#1"
         );
         // Test other special characters in parameters, like { and }.
         assert_eq!(
-            fmt.format_ignoring_pound([("SOME_NUM", "10"), ("GROUP", "} {")]),
+            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "} {".into())]),
             "# } {"
         );
     }
@@ -1089,9 +1253,9 @@ mod tests {
 
         assert_eq!(
             fmt.format_ignoring_pound([
-                ("NUM_PEOPLE", "100"),
-                ("PERSON", "Cibu"),
-                ("PLACE", "the cubes")
+                ("NUM_PEOPLE", 100.into()),
+                ("PERSON", "Cibu".into()),
+                ("PLACE", "the cubes".into())
             ]),
             "I see Cibu and # other people in the cubes."
         );
@@ -1110,12 +1274,24 @@ mod tests {
         );
 
         // Checking that the decision is done after the offset is substracted
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", -1)]), "Few -3");
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 1)]), "One -1");
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", -3)]), "Few -5");
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 3)]), "One 1");
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", -25)]), "Other -27");
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 25)]), "Other 23");
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", (-1 as i64).into())]),
+            "Few -3"
+        );
+        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 1.into())]), "One -1");
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", (-3 as i64).into())]),
+            "Few -5"
+        );
+        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 3.into())]), "One 1");
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", (-25 as i64).into())]),
+            "Other -27"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", 25.into())]),
+            "Other 23"
+        );
     }
 
     #[ignore = "ordinals are not supported"]
@@ -1131,28 +1307,28 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 1)]),
+            fmt.format_with_params([("NUM_FLOOR", 1.into())]),
             "Take the elevator to the 1st floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 2)]),
+            fmt.format_with_params([("NUM_FLOOR", 2.into())]),
             "Take the elevator to the 2nd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 3)]),
+            fmt.format_with_params([("NUM_FLOOR", 3.into())]),
             "Take the elevator to the 3rd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 4)]),
+            fmt.format_with_params([("NUM_FLOOR", 4.into())]),
             "Take the elevator to the 4th floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 23)]),
+            fmt.format_with_params([("NUM_FLOOR", 23.into())]),
             "Take the elevator to the 23rd floor."
         );
         // Esoteric example.
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 0)]),
+            fmt.format_with_params([("NUM_FLOOR", 0.into())]),
             "Take the elevator to the 0th floor."
         );
     }
@@ -1170,19 +1346,19 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", -1)]),
+            fmt.format_with_params([("NUM_FLOOR", (-1 as i64).into())]),
             "Take the elevator to the -1st floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", -2)]),
+            fmt.format_with_params([("NUM_FLOOR", (-2 as i64).into())]),
             "Take the elevator to the -2nd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", -3)]),
+            fmt.format_with_params([("NUM_FLOOR", (-3 as i64).into())]),
             "Take the elevator to the -3rd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", -4)]),
+            fmt.format_with_params([("NUM_FLOOR", (-4 as i64).into())]),
             "Take the elevator to the -4th floor."
         );
     }
@@ -1198,7 +1374,7 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_ignoring_pound([("NUM_FLOOR", 100)]),
+            fmt.format_ignoring_pound([("NUM_FLOOR", 100.into())]),
             "Take the elevator to the #th floor."
         );
     }
@@ -1210,14 +1386,21 @@ mod tests {
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
-            fmt.format_with_params([("A", "10")]),
+            fmt.format_with_params([("A", 10.into())]),
             "Undefined or invalid parameter - SOME_NUM"
         );
 
         // Value is not a number.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "Value")]),
+            fmt.format_with_params([("SOME_NUM", "Value".into())]),
             "Undefined or invalid parameter - SOME_NUM"
         );
+    }
+
+    #[test]
+    fn test_formatting() {
+        let fdf = FixedDecimalFormatter::try_new(&locale!("en-US").into(), Default::default())
+            .expect("locale should be present");
+        assert_eq!(fdf.format_to_string(&1234.into()), "1,234");
     }
 }
