@@ -537,7 +537,11 @@ fn format_plural_ordinal_block(
     let option = match parsed_blocks.get(&named_parameters[argument_name]) {
         Some(option) => option,
         None => {
-            let item = plural_selector(diff.abs().to_string().parse().unwrap(), locale);
+            let Ok(diff_fixed_decimal) = diff.abs().to_string().parse() else {
+                result.push(format!("Invalid parameter - {diff}"));
+                return;
+            };
+            let item = plural_selector(diff_fixed_decimal, locale);
             let Some(option) = parsed_blocks
                 .get(&item.to_owned().into())
                 .or_else(|| parsed_blocks.get(&OTHER.into()))
