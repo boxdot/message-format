@@ -1,13 +1,16 @@
-use core::fmt;
 use std::collections::HashMap;
 
 use icu::{
     locid::Locale,
-    plurals::{PluralCategory, PluralRules},
+    plurals::{PluralCategory, PluralOperands, PluralRules},
 };
 use icu_decimal::FixedDecimalFormatter;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
+
+pub use param::ParamValue;
+
+mod param;
 
 static PLURAL_BLOCK_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*(\w+)\s*,\s*plural\s*,(?:\s*offset:(\d+))?").unwrap());
@@ -27,39 +30,6 @@ pub struct MessageFormat {
     initial_literals: Vec<String>,
     parsed_pattern: Vec<Block>,
     locale: Locale,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub enum ParamValue {
-    Int(i64),
-    String(String),
-}
-
-impl From<i64> for ParamValue {
-    fn from(value: i64) -> Self {
-        Self::Int(value)
-    }
-}
-
-impl From<String> for ParamValue {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-impl From<&'static str> for ParamValue {
-    fn from(value: &'static str) -> Self {
-        value.to_owned().into()
-    }
-}
-
-impl fmt::Display for ParamValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParamValue::Int(value) => write!(f, "{}", value),
-            ParamValue::String(value) => f.write_str(value),
-        }
-    }
 }
 
 impl MessageFormat {
@@ -263,7 +233,6 @@ impl MessageFormat {
     }
 
     fn parse_select_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
-        dbg!(pattern);
         let mut argument_name = None;
         let pattern = SELECT_BLOCK_RE.replace(pattern, |caps: &Captures| {
             // string, name
@@ -295,11 +264,7 @@ impl MessageFormat {
             };
 
             let key = WHITESPACES_RE.replace_all(key, "");
-            let key = match key.parse::<i64>() {
-                Ok(num) => num.into(),
-                Err(_) => key.into_owned().into(),
-            };
-            dbg!(&key);
+            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
             result.insert(key, value);
 
             pos += 1;
@@ -352,11 +317,8 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            let key = match key.parse::<i64>() {
-                Ok(num) => num.into(),
-                Err(_) => key.into_owned().into(),
-            };
-            result.insert(dbg!(key), value);
+            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
+            result.insert(key, value);
 
             pos += 1;
         }
@@ -407,10 +369,7 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            let key = match key.parse::<i64>() {
-                Ok(num) => num.into(),
-                Err(_) => key.into_owned().into(),
-            };
+            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
             result.insert(key, value);
 
             pos += 1;
@@ -493,15 +452,7 @@ fn format_simple_placeholder(
         result.push(format!("Undefined parameter - {param}"));
         return;
     };
-
-    let fdf =
-        FixedDecimalFormatter::try_new(&locale.into(), Default::default()).expect("missing locale");
-
-    let value = match value {
-        ParamValue::Int(value) => fdf.format_to_string(&(*value).into()),
-        ParamValue::String(value) => value.clone(),
-    };
-
+    let value = value.format_with_locale(locale);
     let placeholder = placeholder(literals.len());
     literals.push(value);
     result.push(placeholder);
@@ -549,11 +500,10 @@ fn format_plural_ordinal_block(
     parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
     named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
-    plural_selector: impl Fn(u64, &Locale) -> Option<&'static str>, // TODO: add locale
+    plural_selector: impl Fn(PluralOperands, &Locale) -> Option<&'static str>,
     ignore_pound: bool,
     result: &mut Vec<String>,
 ) {
-    dbg!(named_parameters);
     let Some(Block::String(argument_name)) = parsed_blocks
         .get(&"argumentName".into())
         .and_then(|b| b.first())
@@ -571,29 +521,24 @@ fn format_plural_ordinal_block(
         result.push(format!("Undefined parameter - {argument_name}"));
         return;
     };
-    dbg!(&plural_value);
 
-    let ParamValue::Int(plural_value) = plural_value else {
+    let Some(plural_value) = plural_value.as_decimal() else {
         result.push(format!("Invalid parameter - {argument_name}"));
         return;
     };
 
-    let Ok(argument_offset) = argument_offset.parse::<i64>() else {
+    let Ok(argument_offset) = argument_offset.parse::<f64>() else {
         result.push(format!("Invalid offset - {argument_offset}"));
         return;
     };
 
     let diff = plural_value - argument_offset;
-    dbg!(&named_parameters, &argument_name);
-    dbg!(&parsed_blocks);
 
     let option = match parsed_blocks.get(&named_parameters[argument_name]) {
         Some(option) => option,
         None => {
-            let diff: u64 = diff.abs().try_into().unwrap();
-            dbg!(diff);
-            let item = plural_selector(diff, locale).expect("Invalid plural key");
-            dbg!(&item);
+            let item = plural_selector(diff.abs().to_string().parse().unwrap(), locale)
+                .expect("Invalid plural key");
             let Some(option) = parsed_blocks
                 .get(&item.to_owned().into())
                 .or_else(|| parsed_blocks.get(&OTHER.into()))
@@ -617,28 +562,32 @@ fn format_plural_ordinal_block(
     if ignore_pound {
         result.push(plural);
     } else {
-        let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
-            .expect("missing locale");
-        let diff = fdf.format_to_string(&diff.into());
-        result.push(plural.replace('#', &diff));
+        let diff_str = diff.to_string();
+        let diff_formatted = if let Ok(diff_fixed) = diff_str.parse() {
+            let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
+                .expect("missing locale");
+            fdf.format_to_string(&diff_fixed)
+        } else {
+            diff_str
+        };
+        result.push(plural.replace('#', &diff_formatted));
     }
 }
 
-fn plural_rules_select(n: u64, locale: &Locale) -> Option<&'static str> {
+fn plural_rules_select(n: PluralOperands, locale: &Locale) -> Option<&'static str> {
     let rule = PluralRules::try_new(&locale.into(), icu::plurals::PluralRuleType::Cardinal)
         .expect("missing locale");
-    dbg!(locale);
-    match dbg!(rule.category_for(n)) {
+    match rule.category_for(n) {
         PluralCategory::Zero => Some("zero"),
         PluralCategory::One => Some("one"),
         PluralCategory::Two => Some("two"),
         PluralCategory::Few => Some("few"),
         PluralCategory::Many => Some("many"),
-        PluralCategory::Other => Some("many"),
+        PluralCategory::Other => Some("other"),
     }
 }
 
-fn ordinal_rules_select(n: u64, locale: &Locale) -> Option<&'static str> {
+fn ordinal_rules_select(n: PluralOperands, locale: &Locale) -> Option<&'static str> {
     // Ordinals are not supported
     // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
     plural_rules_select(n, locale)
@@ -667,6 +616,7 @@ struct ElementTypeAndVal {
     typ: ElementType,
     value: String,
 }
+
 impl ElementTypeAndVal {
     fn new(typ: ElementType, value: impl Into<String>) -> Self {
         Self {
@@ -902,7 +852,6 @@ mod tests {
         assert_eq!(fmt.format_with_params([("NUM_COWS", 5.into())]), "a'5'b");
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_serbian_simple_select() {
         let mut fmt = MessageFormat::new(
@@ -972,7 +921,6 @@ mod tests {
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_test_serbian_simple_plural_no_offset() {
         let mut fmt = MessageFormat::with_locale(
@@ -1025,7 +973,6 @@ mod tests {
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_test_serbian_select_nested_in_plural() {
         let mut fmt = MessageFormat::with_locale(
@@ -1079,7 +1026,6 @@ mod tests {
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_test_fallback_to_other_option_in_plurals() {
         // Use Arabic plural rules since they have all six cases.
@@ -1112,8 +1058,8 @@ mod tests {
             "11 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", "1.5".into())]),
-            "1.5 minutes"
+            fmt.format_with_params([("NUM_MINUTES", 1.5.into())]),
+            "1,5 minutes"
         );
     }
 
@@ -1184,7 +1130,6 @@ mod tests {
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_test_plural() {
         let mut fmt = MessageFormat::with_locale(
@@ -1212,7 +1157,7 @@ mod tests {
             "100 many"
         );
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "1.4".into())]),
+            fmt.format_with_params([("SOME_NUM", 1.4.into())]),
             "1,4 other"
         );
         assert_eq!(
@@ -1261,16 +1206,14 @@ mod tests {
         );
     }
 
-    #[ignore = "needs locale support"]
     #[test]
     fn test_test_romanian_offset_with_negative_value() {
-        let mut fmt = MessageFormat::new(
-            "{NUM_FLOOR, plural, offset,2 \
+        let mut fmt = MessageFormat::with_locale(
+            "{NUM_FLOOR, plural, offset:2 \
           one {One #}\
           few {Few #}\
           other {Other #}}",
-            // locale,
-            // "ro",
+            locale!("ro"),
         );
 
         // Checking that the decision is done after the offset is substracted
@@ -1395,12 +1338,5 @@ mod tests {
             fmt.format_with_params([("SOME_NUM", "Value".into())]),
             "Undefined or invalid parameter - SOME_NUM"
         );
-    }
-
-    #[test]
-    fn test_formatting() {
-        let fdf = FixedDecimalFormatter::try_new(&locale!("en-US").into(), Default::default())
-            .expect("locale should be present");
-        assert_eq!(fdf.format_to_string(&1234.into()), "1,234");
     }
 }
