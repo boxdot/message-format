@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 
-use icu::{
-    locid::Locale,
-    plurals::{PluralCategory, PluralOperands, PluralRules},
-};
-use icu_decimal::FixedDecimalFormatter;
+use format::Formatter;
+use icu::locid::Locale;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
 pub use param::ParamValue;
 
+mod format;
 mod param;
 
 static PLURAL_BLOCK_RE: Lazy<Regex> =
@@ -83,33 +81,13 @@ impl<'l> MessageFormat<'l> {
     ) -> String {
         self.init();
 
-        if self.parsed_pattern.is_empty() {
-            return String::new();
-        }
-
-        let mut literals = self.initial_literals.clone();
-
-        let mut message_parts = Vec::new();
-        format_block(
-            &self.locale,
+        Formatter::new(
+            self.locale,
+            &self.initial_literals,
             &self.parsed_pattern,
-            named_parameters.as_ref().unwrap_or(&HashMap::new()),
-            &mut literals,
             ignore_pound,
-            &mut message_parts,
-        );
-        let mut message = message_parts.join("");
-
-        if !ignore_pound {
-            assert!(!message.contains('#'), "not all # were replaced");
-        }
-
-        while let Some(literal) = literals.pop() {
-            let placeholder = placeholder(literals.len());
-            message = message.replacen(&placeholder, &literal, 1);
-        }
-
-        message
+        )
+        .format(named_parameters)
     }
 
     fn init(&mut self) {
@@ -382,213 +360,6 @@ impl<'l> MessageFormat<'l> {
 fn placeholder(idx: usize) -> String {
     const LITERAL_PLACEHOLDER: &str = "\u{FDDF}_";
     format!("_{LITERAL_PLACEHOLDER}{idx}_")
-}
-
-fn format_block(
-    locale: &Locale,
-    parsed_blocks: &[Block],
-    named_parameters: &HashMap<String, ParamValue>,
-    literals: &mut Vec<String>,
-    ignore_pound: bool,
-    result: &mut Vec<String>,
-) {
-    for current_pattern in parsed_blocks {
-        match current_pattern {
-            Block::String(value) => {
-                result.push(value.clone());
-            }
-            Block::Simple(value) => {
-                format_simple_placeholder(locale, value, named_parameters, literals, result);
-            }
-            Block::Select(map_pattern) => {
-                format_select_block(
-                    locale,
-                    map_pattern,
-                    named_parameters,
-                    literals,
-                    ignore_pound,
-                    result,
-                );
-            }
-            Block::Plural(value) => {
-                format_plural_ordinal_block(
-                    locale,
-                    value,
-                    named_parameters,
-                    literals,
-                    plural_rules_select,
-                    ignore_pound,
-                    result,
-                );
-            }
-            Block::Ordinal(value) => {
-                format_plural_ordinal_block(
-                    locale,
-                    value,
-                    named_parameters,
-                    literals,
-                    ordinal_rules_select,
-                    ignore_pound,
-                    result,
-                );
-            }
-        }
-    }
-}
-
-fn format_simple_placeholder(
-    locale: &Locale,
-    param: &str,
-    named_parameters: &HashMap<String, ParamValue>,
-    literals: &mut Vec<String>,
-    result: &mut Vec<String>,
-) {
-    let Some(value) = named_parameters.get(param) else {
-        result.push(format!("Undefined parameter - {param}"));
-        return;
-    };
-    let value = value.format_with_locale(locale);
-    let placeholder = placeholder(literals.len());
-    literals.push(value);
-    result.push(placeholder);
-}
-
-fn format_select_block(
-    locale: &Locale,
-    parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
-    named_parameters: &HashMap<String, ParamValue>,
-    literals: &mut Vec<String>,
-    ignore_pound: bool,
-    result: &mut Vec<String>,
-) {
-    let Some(Block::String(argument_name)) = parsed_blocks
-        .get(&"argumentName".to_owned().into())
-        .and_then(|b| b.first())
-    else {
-        panic!("invalid argument name");
-    };
-
-    let Some(param) = named_parameters.get(argument_name) else {
-        result.push(format!("Undefined parameter - {argument_name}"));
-        return;
-    };
-
-    let Some(option) = parsed_blocks
-        .get(param)
-        .or_else(|| parsed_blocks.get(&OTHER.into()))
-    else {
-        panic!("Invalid option or missing other option for select block");
-    };
-
-    format_block(
-        locale,
-        option,
-        named_parameters,
-        literals,
-        ignore_pound,
-        result,
-    );
-}
-
-fn format_plural_ordinal_block(
-    locale: &Locale,
-    parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
-    named_parameters: &HashMap<String, ParamValue>,
-    literals: &mut Vec<String>,
-    plural_selector: impl Fn(PluralOperands, &Locale) -> &'static str,
-    ignore_pound: bool,
-    result: &mut Vec<String>,
-) {
-    let Some(Block::String(argument_name)) = parsed_blocks
-        .get(&"argumentName".into())
-        .and_then(|b| b.first())
-    else {
-        panic!("invalid argument name");
-    };
-    let Some(Block::String(argument_offset)) = parsed_blocks
-        .get(&"argumentOffset".into())
-        .and_then(|b| b.first())
-    else {
-        panic!("invalid argument offset");
-    };
-
-    let Some(plural_value) = named_parameters.get(argument_name) else {
-        result.push(format!("Undefined parameter - {argument_name}"));
-        return;
-    };
-
-    let Some(plural_value) = plural_value.as_decimal() else {
-        result.push(format!("Invalid parameter - {argument_name}"));
-        return;
-    };
-
-    let Ok(argument_offset) = argument_offset.parse::<f64>() else {
-        result.push(format!("Invalid offset - {argument_offset}"));
-        return;
-    };
-
-    let diff = plural_value - argument_offset;
-
-    let option = match parsed_blocks.get(&named_parameters[argument_name]) {
-        Some(option) => option,
-        None => {
-            let Ok(diff_fixed_decimal) = diff.abs().to_string().parse() else {
-                result.push(format!("Invalid parameter - {diff}"));
-                return;
-            };
-            let item = plural_selector(diff_fixed_decimal, locale);
-            let Some(option) = parsed_blocks
-                .get(&item.to_owned().into())
-                .or_else(|| parsed_blocks.get(&OTHER.into()))
-            else {
-                panic!("Invalid option or missing other option for plural block");
-            };
-            option
-        }
-    };
-
-    let mut plural_result = Vec::new();
-    format_block(
-        locale,
-        option,
-        named_parameters,
-        literals,
-        ignore_pound,
-        &mut plural_result,
-    );
-    let plural = plural_result.join("");
-    if ignore_pound {
-        result.push(plural);
-    } else {
-        let diff_str = diff.to_string();
-        let diff_formatted = if let Ok(diff_fixed) = diff_str.parse() {
-            let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
-                .expect("missing locale");
-            fdf.format_to_string(&diff_fixed)
-        } else {
-            diff_str
-        };
-        result.push(plural.replace('#', &diff_formatted));
-    }
-}
-
-fn plural_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
-    let rule = PluralRules::try_new(&locale.into(), icu::plurals::PluralRuleType::Cardinal)
-        .expect("missing locale");
-    match rule.category_for(n) {
-        PluralCategory::Zero => "zero",
-        PluralCategory::One => "one",
-        PluralCategory::Two => "two",
-        PluralCategory::Few => "few",
-        PluralCategory::Many => "many",
-        PluralCategory::Other => "other",
-    }
-}
-
-fn ordinal_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
-    // Ordinals are not supported
-    // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
-    plural_rules_select(n, locale)
 }
 
 #[derive(Debug)]
