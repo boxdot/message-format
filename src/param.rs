@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use icu::locid::Locale;
 use icu_decimal::FixedDecimalFormatter;
@@ -19,10 +19,20 @@ impl From<ParamValueInner> for ParamValue {
 enum ParamValueInner {
     Int(i64),
     Dec(OrderedFloat<f64>),
-    String(String),
+    String(Cow<'static, str>),
 }
 
+pub(crate) const OTHER: ParamValue = ParamValue::from_static_str("other");
+pub(crate) const ARGUMENT_NAME: ParamValue = ParamValue::from_static_str("argumentName");
+pub(crate) const ARGUMENT_OFFSET: ParamValue = ParamValue::from_static_str("argumentOffset");
+
 impl ParamValue {
+    pub(crate) const fn from_static_str(s: &'static str) -> Self {
+        ParamValue {
+            inner: ParamValueInner::String(Cow::Borrowed(s)),
+        }
+    }
+
     pub(crate) fn parse_number(s: &str) -> Option<Self> {
         if let Ok(num) = s.parse::<i64>() {
             Some(ParamValueInner::Int(num).into())
@@ -50,7 +60,7 @@ impl ParamValue {
                     value_str
                 }
             }
-            ParamValueInner::String(value) => value.clone(),
+            ParamValueInner::String(value) => value.clone().into_owned(),
         }
     }
 
@@ -89,13 +99,13 @@ impl_from_integer_type!(u8);
 
 impl From<String> for ParamValue {
     fn from(value: String) -> Self {
-        ParamValueInner::String(value).into()
+        ParamValueInner::String(Cow::Owned(value)).into()
     }
 }
 
 impl From<&'static str> for ParamValue {
     fn from(value: &'static str) -> Self {
-        value.to_owned().into()
+        ParamValueInner::String(Cow::Borrowed(value)).into()
     }
 }
 

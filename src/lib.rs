@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use format::Formatter;
 use icu::locid::Locale;
 use once_cell::sync::Lazy;
+use param::{ARGUMENT_NAME, ARGUMENT_OFFSET, OTHER};
 use regex::{Captures, Regex};
 
 pub use param::ParamValue;
@@ -19,8 +20,6 @@ static SELECT_BLOCK_RE: Lazy<Regex> =
 
 static KV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*=?(\w+)\s*").unwrap());
 static WHITESPACES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
-
-const OTHER: &str = "other";
 
 #[derive(Debug)]
 pub struct MessageFormat<'l> {
@@ -215,7 +214,7 @@ impl<'l> MessageFormat<'l> {
 
         let mut result = HashMap::new();
         result.insert(
-            "argumentName".to_owned().into(),
+            ARGUMENT_NAME,
             vec![Block::String(argument_name.expect("logic error"))],
         );
 
@@ -244,7 +243,7 @@ impl<'l> MessageFormat<'l> {
         }
 
         assert!(
-            result.contains_key(&OTHER.into()),
+            result.contains_key(&OTHER),
             "missing other key in select statement"
         );
 
@@ -263,12 +262,9 @@ impl<'l> MessageFormat<'l> {
         });
 
         let mut result = HashMap::new();
+        result.insert(ARGUMENT_NAME, vec![Block::String(argument_name.unwrap())]);
         result.insert(
-            "argumentName".to_owned().into(),
-            vec![Block::String(argument_name.unwrap())],
-        );
-        result.insert(
-            "argumentOffset".to_owned().into(),
+            ARGUMENT_OFFSET,
             vec![Block::String(argument_offset.to_string())],
         );
 
@@ -297,7 +293,7 @@ impl<'l> MessageFormat<'l> {
         }
 
         assert!(
-            result.contains_key(&OTHER.into()),
+            result.contains_key(&OTHER),
             "missing other key in plural statement"
         );
 
@@ -312,14 +308,8 @@ impl<'l> MessageFormat<'l> {
         });
 
         let mut result = HashMap::new();
-        result.insert(
-            "argumentName".to_owned().into(),
-            vec![Block::String(argument_name.unwrap())],
-        );
-        result.insert(
-            "argumentOffset".to_owned().into(),
-            vec![Block::String("0".to_owned())],
-        );
+        result.insert(ARGUMENT_NAME, vec![Block::String(argument_name.unwrap())]);
+        result.insert(ARGUMENT_OFFSET, vec![Block::String("0".to_owned())]);
 
         let parts = self.extract_parts(&pattern);
 
@@ -349,7 +339,7 @@ impl<'l> MessageFormat<'l> {
         }
 
         assert!(
-            result.contains_key(&OTHER.into()),
+            result.contains_key(&OTHER),
             "missing other key in ordinal statement"
         );
 
