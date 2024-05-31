@@ -25,20 +25,15 @@ static WHITESPACES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 const OTHER: &str = "other";
 
 #[derive(Debug)]
-pub struct MessageFormat {
+pub struct MessageFormat<'l> {
     pattern: Option<String>,
     initial_literals: Vec<String>,
     parsed_pattern: Vec<Block>,
-    locale: Locale,
+    locale: &'l Locale,
 }
 
-impl MessageFormat {
-    pub fn new(pattern: impl Into<String>) -> Self {
-        let locale = icu::locid::locale!("en-US");
-        Self::with_locale(pattern, locale)
-    }
-
-    pub fn with_locale(pattern: impl Into<String>, locale: Locale) -> Self {
+impl<'l> MessageFormat<'l> {
+    pub fn new(pattern: impl Into<String>, locale: &'l Locale) -> Self {
         Self {
             pattern: Some(pattern.into()),
             initial_literals: Default::default(),
@@ -643,27 +638,31 @@ mod tests {
 
     #[test]
     fn test_empty_pattern() {
-        let mut fmt = MessageFormat::new("");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("", &locale);
         assert_eq!(fmt.format(), "");
     }
 
     #[test]
     #[should_panic(expected = "No matching { for }")]
     fn test_missing_left_curly_brace() {
-        let mut fmt = MessageFormat::new("\'\'{}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("\'\'{}}", &locale);
         fmt.format();
     }
 
     #[test]
     #[should_panic(expected = "There are mismatched { or } in the pattern")]
     fn test_too_many_left_curly_braces() {
-        let mut fmt = MessageFormat::new("{} {");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{} {", &locale);
         fmt.format();
     }
 
     #[test]
     fn test_simple_replacement() {
-        let mut fmt = MessageFormat::new("New York in {SEASON} is nice.");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("New York in {SEASON} is nice.", &locale);
         assert_eq!(
             fmt.format_with_params([("SEASON", "the Summer".into())]),
             "New York in the Summer is nice."
@@ -672,12 +671,14 @@ mod tests {
 
     #[test]
     fn test_simple_select() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{GENDER, select,\
             male {His}\
             female {Her}\
             other {Their}} \
             bicycle is {GENDER, select, male {blue} female {red} other {green}}.",
+            &locale,
         );
         assert_eq!(
             fmt.format_with_params([("GENDER", "male".into())]),
@@ -699,12 +700,14 @@ mod tests {
 
     #[test]
     fn test_simple_plural() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "I see {NUM_PEOPLE, plural, offset:1 \
             =0 {no one at all in {PLACE}.} \
             =1 {{PERSON} in {PLACE}.} \
             one {{PERSON} and one other person in {PLACE}.} \
             other {{PERSON} and # other people in {PLACE}.}}",
+            &locale,
         );
         assert_eq!(
             fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Belgrade".into())]),
@@ -738,6 +741,7 @@ mod tests {
 
     #[test]
     fn test_select_nested_in_plural() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{CIRCLES, plural, \
         one {{GENDER, select, \
@@ -746,6 +750,7 @@ mod tests {
         other {{GENDER, select,
           female {{WHO} added you to her # circles} \
           other  {{WHO} added you to his # circles}}}}",
+            &locale,
         );
         assert_eq!(
             fmt.format_with_params([
@@ -768,6 +773,7 @@ mod tests {
     #[test]
     fn test_plural_nested_in_select() {
         // Added offset just for testing purposes. It doesn't make sense to have it otherwise.
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{GENDER, select, \
         female {{NUM_GROUPS, plural, \
@@ -776,6 +782,7 @@ mod tests {
         other {{NUM_GROUPS, plural, offset,1\
           one {{WHO} added you to his group} \
           other {{WHO} added you to his # groups}}}}",
+            &locale,
         );
 
         assert_eq!(
@@ -798,8 +805,11 @@ mod tests {
 
     #[test]
     fn test_literal_open_curly_brace() {
-        let mut fmt =
-            MessageFormat::new("Anna's house has '{0} and # in the roof' and {NUM_COWS} cows.");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new(
+            "Anna's house has '{0} and # in the roof' and {NUM_COWS} cows.",
+            &locale,
+        );
         assert_eq!(
             fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
@@ -808,8 +818,11 @@ mod tests {
 
     #[test]
     fn test_literal_closed_curly_brace() {
-        let mut fmt =
-            MessageFormat::new("Anna's house has '{'0'} and # in the roof' and {NUM_COWS} cows.");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new(
+            "Anna's house has '{'0'} and # in the roof' and {NUM_COWS} cows.",
+            &locale,
+        );
         assert_eq!(
             fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
@@ -822,8 +835,11 @@ mod tests {
 
     #[test]
     fn test_literal_pound_sign() {
-        let mut fmt =
-            MessageFormat::new("Anna's house has '{0}' and '# in the roof' and {NUM_COWS} cows.");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new(
+            "Anna's house has '{0}' and '# in the roof' and {NUM_COWS} cows.",
+            &locale,
+        );
         assert_eq!(
             fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house has {0} and # in the roof and 5 cows."
@@ -836,7 +852,8 @@ mod tests {
 
     #[test]
     fn test_no_literals_for_single_quotes() {
-        let mut fmt = MessageFormat::new("Anna's house 'has {NUM_COWS} cows'.");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("Anna's house 'has {NUM_COWS} cows'.", &locale);
         assert_eq!(
             fmt.format_with_params([("NUM_COWS", 5.into())]),
             "Anna's house 'has 5 cows'."
@@ -845,21 +862,25 @@ mod tests {
 
     #[test]
     fn test_consecutive_single_quotes_are_replaced_with_one_single_quote() {
-        let mut fmt = MessageFormat::new("Anna''s house a'{''''b'");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("Anna''s house a'{''''b'", &locale);
         assert_eq!(fmt.format(), "Anna's house a{''b");
     }
 
     #[test]
     fn test_test_consecutive_single_quotes_before_special_char_dont_create_literal() {
-        let mut fmt = MessageFormat::new("a''{NUM_COWS}'b");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("a''{NUM_COWS}'b", &locale);
         assert_eq!(fmt.format_with_params([("NUM_COWS", 5.into())]), "a'5'b");
     }
 
     #[test]
     fn test_serbian_simple_select() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{GENDER, select, female {Njen} other {Njegov}} bicikl je \
              {GENDER, select, female {crven} other {plav}}.",
+            &locale,
         );
 
         assert_eq!(
@@ -874,7 +895,8 @@ mod tests {
 
     #[test]
     fn test_serbian_simple_plural() {
-        let mut fmt = MessageFormat::with_locale(
+        let locale = locale!("sr");
+        let mut fmt = MessageFormat::new(
             "Ja {NUM_PEOPLE, plural, offset:1 \
             =0 {ne vidim nikoga} \
             =1 {vidim {PERSON}} \
@@ -883,7 +905,7 @@ mod tests {
             many {vidim {PERSON} i jos # osoba} \
             other {vidim {PERSON} i jos # osoba}} \
           u {PLACE}.",
-            locale!("sr"),
+            &locale,
         );
 
         assert_eq!(
@@ -926,7 +948,8 @@ mod tests {
 
     #[test]
     fn test_test_serbian_simple_plural_no_offset() {
-        let mut fmt = MessageFormat::with_locale(
+        let locale = locale!("sr");
+        let mut fmt = MessageFormat::new(
             "Ja {NUM_PEOPLE, plural, \
             =0 {ne vidim nikoga} \
             =1 {vidim {PERSON}} \
@@ -935,7 +958,7 @@ mod tests {
             many {vidim {PERSON} i jos # osoba} \
             other {vidim {PERSON} i jos # osoba}} \
           u {PLACE}.",
-            locale!("sr"),
+            &locale,
         );
 
         assert_eq!(
@@ -978,7 +1001,8 @@ mod tests {
 
     #[test]
     fn test_test_serbian_select_nested_in_plural() {
-        let mut fmt = MessageFormat::with_locale(
+        let locale = locale!("sr");
+        let mut fmt = MessageFormat::new(
             "{CIRCLES, plural, \
             one {{GENDER, select, \
               female {{WHO} vas je dodala u njen # kruzok} \
@@ -992,7 +1016,7 @@ mod tests {
             other {{GENDER, select, \
               female {{WHO} vas je dodala u njenih # kruzoka} \
               other  {{WHO} vas je dodao u njegovih # kruzoka}}}}",
-            locale!("sr"),
+            &locale,
         );
 
         assert_eq!(
@@ -1034,10 +1058,8 @@ mod tests {
         // Use Arabic plural rules since they have all six cases.
         // Only locale and numbers matter, the actual language of the message
         // does not.
-        let mut fmt = MessageFormat::with_locale(
-            "{NUM_MINUTES, plural, other {# minutes}}",
-            locale!("ar-DZ"),
-        );
+        let locale = locale!("ar-DZ");
+        let mut fmt = MessageFormat::new("{NUM_MINUTES, plural, other {# minutes}}", &locale);
 
         // These numbers exercise all cases for the arabic plural rules.
         assert_eq!(
@@ -1068,8 +1090,10 @@ mod tests {
 
     #[test]
     fn test_test_pound_shows_number_minus_offset_in_all_cases() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{SOME_NUM, plural, offset:1 =0 {#} =1 {#} =2 {#} one {#} other {#}}",
+            &locale,
         );
 
         assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "-1");
@@ -1080,7 +1104,8 @@ mod tests {
 
     #[test]
     fn test_test_special_characters_in_paramater_dont_change_format() {
-        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}", &locale);
 
         // Test pound sign.
         assert_eq!(
@@ -1096,7 +1121,8 @@ mod tests {
 
     #[test]
     fn test_test_missing_or_invalid_plural_parameter() {
-        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {result}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {result}}", &locale);
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
@@ -1113,7 +1139,8 @@ mod tests {
 
     #[test]
     fn test_test_missing_select_parameter() {
-        let mut fmt = MessageFormat::new("{GENDER, select, other {result}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{GENDER, select, other {result}}", &locale);
 
         // Key name doesn"t match A != GENDER.
         assert_eq!(
@@ -1124,7 +1151,8 @@ mod tests {
 
     #[test]
     fn test_test_missing_simple_placeholder() {
-        let mut fmt = MessageFormat::new("{result}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{result}", &locale);
 
         // Key name doesn"t match A != result.
         assert_eq!(
@@ -1135,7 +1163,8 @@ mod tests {
 
     #[test]
     fn test_test_plural() {
-        let mut fmt = MessageFormat::with_locale(
+        let locale = locale!("ru");
+        let mut fmt = MessageFormat::new(
             "{SOME_NUM, plural,\
             =0 {none}\
             =1 {exactly one}\
@@ -1144,7 +1173,7 @@ mod tests {
             many {# many}\
             other {# other}\
           }",
-            locale!("ru"),
+            &locale,
         );
 
         assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "none");
@@ -1175,7 +1204,8 @@ mod tests {
 
     #[test]
     fn test_test_plural_with_ignore_pound() {
-        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}", &locale);
 
         // Test pound sign.
         assert_eq!(
@@ -1191,12 +1221,14 @@ mod tests {
 
     #[test]
     fn test_test_simple_plural_with_ignore_pound() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "I see {NUM_PEOPLE, plural, offset:1 \
           =0 {no one at all in {PLACE}.} \
           =1 {{PERSON} in {PLACE}.} \
           one {{PERSON} and one other person in {PLACE}.} \
           other {{PERSON} and # other people in {PLACE}.}}",
+            &locale,
         );
 
         assert_eq!(
@@ -1211,12 +1243,13 @@ mod tests {
 
     #[test]
     fn test_test_romanian_offset_with_negative_value() {
-        let mut fmt = MessageFormat::with_locale(
+        let locale = locale!("ro");
+        let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, plural, offset:2 \
           one {One #}\
           few {Few #}\
           other {Other #}}",
-            locale!("ro"),
+            &locale,
         );
 
         // Checking that the decision is done after the offset is substracted
@@ -1244,12 +1277,14 @@ mod tests {
     #[test]
     fn test_test_simple_ordinal() {
         // TOFIX. Ordinal not supported in Dart
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, selectordinal, \
           one {Take the elevator to the #st floor.}\
           two {Take the elevator to the #nd floor.}\
           few {Take the elevator to the #rd floor.}\
           other {Take the elevator to the #th floor.}}",
+            &locale,
         );
 
         assert_eq!(
@@ -1283,12 +1318,14 @@ mod tests {
     #[test]
     fn test_test_ordinal_with_negative_value() {
         // TOFIX. Ordinal not supported in Dart
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, selectordinal, \
           one {Take the elevator to the #st floor.}\
           two {Take the elevator to the #nd floor.}\
           few {Take the elevator to the #rd floor.}\
           other {Take the elevator to the #th floor.}}",
+            &locale,
         );
 
         assert_eq!(
@@ -1311,12 +1348,14 @@ mod tests {
 
     #[test]
     fn test_test_simple_ordinal_with_ignore_pound() {
+        let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, selectordinal, \
           one {Take the elevator to the #st floor.}\
           two {Take the elevator to the #nd floor.}\
           few {Take the elevator to the #rd floor.}\
           other {Take the elevator to the #th floor.}}",
+            &locale,
         );
 
         assert_eq!(
@@ -1328,7 +1367,8 @@ mod tests {
     #[ignore = "ordinals are not supported"]
     #[test]
     fn test_test_missing_or_invalid_ordinal_parameter() {
-        let mut fmt = MessageFormat::new("{SOME_NUM, selectordinal, other {result}}");
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new("{SOME_NUM, selectordinal, other {result}}", &locale);
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
