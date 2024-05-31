@@ -264,7 +264,7 @@ impl MessageFormat {
             };
 
             let key = WHITESPACES_RE.replace_all(key, "");
-            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
+            let key = ParamValue::parse_number(&key).unwrap_or_else(|| key.into_owned().into());
             result.insert(key, value);
 
             pos += 1;
@@ -317,7 +317,7 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
+            let key = ParamValue::parse_number(&key).unwrap_or_else(|| key.into_owned().into());
             result.insert(key, value);
 
             pos += 1;
@@ -369,7 +369,7 @@ impl MessageFormat {
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
-            let key = ParamValue::parse_number(&*key).unwrap_or_else(|| key.into_owned().into());
+            let key = ParamValue::parse_number(&key).unwrap_or_else(|| key.into_owned().into());
             result.insert(key, value);
 
             pos += 1;
@@ -421,7 +421,7 @@ fn format_block(
                     value,
                     named_parameters,
                     literals,
-                    |n, locale| plural_rules_select(n, locale),
+                    plural_rules_select,
                     ignore_pound,
                     result,
                 );
@@ -432,7 +432,7 @@ fn format_block(
                     value,
                     named_parameters,
                     literals,
-                    |n, locale| ordinal_rules_select(n, locale),
+                    ordinal_rules_select,
                     ignore_pound,
                     result,
                 );
@@ -500,7 +500,7 @@ fn format_plural_ordinal_block(
     parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
     named_parameters: &HashMap<String, ParamValue>,
     literals: &mut Vec<String>,
-    plural_selector: impl Fn(PluralOperands, &Locale) -> Option<&'static str>,
+    plural_selector: impl Fn(PluralOperands, &Locale) -> &'static str,
     ignore_pound: bool,
     result: &mut Vec<String>,
 ) {
@@ -537,8 +537,7 @@ fn format_plural_ordinal_block(
     let option = match parsed_blocks.get(&named_parameters[argument_name]) {
         Some(option) => option,
         None => {
-            let item = plural_selector(diff.abs().to_string().parse().unwrap(), locale)
-                .expect("Invalid plural key");
+            let item = plural_selector(diff.abs().to_string().parse().unwrap(), locale);
             let Some(option) = parsed_blocks
                 .get(&item.to_owned().into())
                 .or_else(|| parsed_blocks.get(&OTHER.into()))
@@ -574,20 +573,20 @@ fn format_plural_ordinal_block(
     }
 }
 
-fn plural_rules_select(n: PluralOperands, locale: &Locale) -> Option<&'static str> {
+fn plural_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
     let rule = PluralRules::try_new(&locale.into(), icu::plurals::PluralRuleType::Cardinal)
         .expect("missing locale");
     match rule.category_for(n) {
-        PluralCategory::Zero => Some("zero"),
-        PluralCategory::One => Some("one"),
-        PluralCategory::Two => Some("two"),
-        PluralCategory::Few => Some("few"),
-        PluralCategory::Many => Some("many"),
-        PluralCategory::Other => Some("other"),
+        PluralCategory::Zero => "zero",
+        PluralCategory::One => "one",
+        PluralCategory::Two => "two",
+        PluralCategory::Few => "few",
+        PluralCategory::Many => "many",
+        PluralCategory::Other => "other",
     }
 }
 
-fn ordinal_rules_select(n: PluralOperands, locale: &Locale) -> Option<&'static str> {
+fn ordinal_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
     // Ordinals are not supported
     // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
     plural_rules_select(n, locale)
@@ -1218,17 +1217,17 @@ mod tests {
 
         // Checking that the decision is done after the offset is substracted
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-1 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())]),
             "Few -3"
         );
         assert_eq!(fmt.format_with_params([("NUM_FLOOR", 1.into())]), "One -1");
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-3 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())]),
             "Few -5"
         );
         assert_eq!(fmt.format_with_params([("NUM_FLOOR", 3.into())]), "One 1");
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-25 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-25_i64).into())]),
             "Other -27"
         );
         assert_eq!(
@@ -1289,19 +1288,19 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-1 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())]),
             "Take the elevator to the -1st floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-2 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-2_i64).into())]),
             "Take the elevator to the -2nd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-3 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())]),
             "Take the elevator to the -3rd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-4 as i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-4_i64).into())]),
             "Take the elevator to the -4th floor."
         );
     }
