@@ -43,8 +43,6 @@ impl<'a> Formatter<'a> {
         &mut self,
         named_parameters: Option<HashMap<String, ParamValue>>,
     ) -> String {
-        // self.init();
-
         if self.parsed_pattern.is_empty() {
             return String::new();
         }
