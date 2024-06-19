@@ -51,7 +51,7 @@ impl<'a> Formatter<'a> {
 
         let mut message_parts = Vec::new();
         self.format_block(
-            &self.parsed_pattern,
+            self.parsed_pattern,
             named_parameters.as_ref().unwrap_or(&HashMap::new()),
             &mut literals,
             &mut message_parts,
@@ -148,7 +148,7 @@ impl<'a> Formatter<'a> {
 
         let Some(option) = parsed_blocks
             .get(param)
-            .or_else(|| parsed_blocks.get(&OTHER.into()))
+            .or_else(|| parsed_blocks.get(&OTHER))
         else {
             panic!("Invalid option or missing other option for select block");
         };
@@ -204,7 +204,7 @@ impl<'a> Formatter<'a> {
                 let item = plural_selector(diff_fixed_decimal, self.locale);
                 let Some(option) = parsed_blocks
                     .get(&item.to_owned().into())
-                    .or_else(|| parsed_blocks.get(&OTHER.into()))
+                    .or_else(|| parsed_blocks.get(&OTHER))
                 else {
                     panic!("Invalid option or missing other option for plural block");
                 };

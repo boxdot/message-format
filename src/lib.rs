@@ -131,7 +131,7 @@ impl<'l> MessageFormat<'l> {
                         BlockType::Plural => Block::Plural(self.parse_plural_block(&part.value)),
                         BlockType::Ordinal => Block::Ordinal(self.parse_ordinal_block(&part.value)),
                         BlockType::Simple => Block::Simple(part.value),
-                        _ => {
+                        BlockType::Unknown => {
                             panic!("unknown block type for pattern {}", part.value);
                         }
                     }
