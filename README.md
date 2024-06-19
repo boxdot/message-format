@@ -1,5 +1,10 @@
 # Message Format
 
+[![ci-badge]][ci]
+
+[ci-badge]: https://github.com/boxdot/message-format/actions/workflows/ci.yaml/badge.svg
+[ci]: https://github.com/boxdot/message-format/actions/workflows/ci.yaml
+
 Port of the [`MessageFormat`] class from the internalization Dart package `intl`
 to Rust. The port is verbatim. In particular, memory model, error handling and
 optimizations are not Rust idiomatic.
