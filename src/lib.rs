@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_consecutive_single_quotes_before_special_char_dont_create_literal() {
+    fn test_consecutive_single_quotes_before_special_char_dont_create_literal() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("a''{NUM_COWS}'b", &locale);
         assert_eq!(fmt.format_with_params([("NUM_COWS", 5.into())]), "a'5'b");
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_serbian_simple_plural_no_offset() {
+    fn test_serbian_simple_plural_no_offset() {
         let locale = locale!("sr");
         let mut fmt = MessageFormat::new(
             "Ja {NUM_PEOPLE, plural, \
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_serbian_select_nested_in_plural() {
+    fn test_serbian_select_nested_in_plural() {
         let locale = locale!("sr");
         let mut fmt = MessageFormat::new(
             "{CIRCLES, plural, \
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_fallback_to_other_option_in_plurals() {
+    fn test_fallback_to_other_option_in_plurals() {
         // Use Arabic plural rules since they have all six cases.
         // Only locale and numbers matter, the actual language of the message
         // does not.
@@ -850,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_pound_shows_number_minus_offset_in_all_cases() {
+    fn test_pound_shows_number_minus_offset_in_all_cases() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{SOME_NUM, plural, offset:1 =0 {#} =1 {#} =2 {#} one {#} other {#}}",
@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_special_characters_in_paramater_dont_change_format() {
+    fn test_special_characters_in_paramater_dont_change_format() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}", &locale);
 
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_missing_or_invalid_plural_parameter() {
+    fn test_missing_or_invalid_plural_parameter() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {result}}", &locale);
 
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_missing_select_parameter() {
+    fn test_missing_select_parameter() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{GENDER, select, other {result}}", &locale);
 
@@ -911,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_missing_simple_placeholder() {
+    fn test_missing_simple_placeholder() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{result}", &locale);
 
@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_plural() {
+    fn test_plural() {
         let locale = locale!("ru");
         let mut fmt = MessageFormat::new(
             "{SOME_NUM, plural,\
@@ -964,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_plural_with_ignore_pound() {
+    fn test_plural_with_ignore_pound() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{SOME_NUM, plural, other {# {GROUP}}}", &locale);
 
@@ -981,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_simple_plural_with_ignore_pound() {
+    fn test_simple_plural_with_ignore_pound() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "I see {NUM_PEOPLE, plural, offset:1 \
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_romanian_offset_with_negative_value() {
+    fn test_romanian_offset_with_negative_value() {
         let locale = locale!("ro");
         let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, plural, offset:2 \
@@ -1036,7 +1036,7 @@ mod tests {
 
     #[ignore = "ordinals are not supported"]
     #[test]
-    fn test_test_simple_ordinal() {
+    fn test_simple_ordinal() {
         // TOFIX. Ordinal not supported in Dart
         let locale = locale!("en");
         let mut fmt = MessageFormat::new(
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[ignore = "ordinals are not supported"]
     #[test]
-    fn test_test_ordinal_with_negative_value() {
+    fn test_ordinal_with_negative_value() {
         // TOFIX. Ordinal not supported in Dart
         let locale = locale!("en");
         let mut fmt = MessageFormat::new(
@@ -1108,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_simple_ordinal_with_ignore_pound() {
+    fn test_simple_ordinal_with_ignore_pound() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new(
             "{NUM_FLOOR, selectordinal, \
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[ignore = "ordinals are not supported"]
     #[test]
-    fn test_test_missing_or_invalid_ordinal_parameter() {
+    fn test_missing_or_invalid_ordinal_parameter() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{SOME_NUM, selectordinal, other {result}}", &locale);
 
@@ -1141,6 +1141,27 @@ mod tests {
         assert_eq!(
             fmt.format_with_params([("SOME_NUM", "Value".into())]),
             "Undefined or invalid parameter - SOME_NUM"
+        );
+    }
+
+    #[test]
+    fn test_int_as_float_singular_plural_or_zero() {
+        let locale = locale!("en");
+        let mut fmt = MessageFormat::new(
+            "{n, plural, =0 {No more messages} =1 {1 more message} other {{n} more messages}}",
+            &locale,
+        );
+        assert_eq!(
+            fmt.format_with_params([("n", 0.0.into())]),
+            "No more messages"
+        );
+        assert_eq!(
+            fmt.format_with_params([("n", 1.0.into())]),
+            "1 more message"
+        );
+        assert_eq!(
+            fmt.format_with_params([("n", 10.0.into())]),
+            "10 more messages"
         );
     }
 }
