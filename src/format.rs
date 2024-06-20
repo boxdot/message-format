@@ -8,6 +8,7 @@ use icu_decimal::FixedDecimalFormatter;
 
 use crate::{placeholder, Block, ParamValue, OTHER};
 
+#[derive(Debug)]
 pub(crate) struct Formatter<'a> {
     locale: &'a Locale,
     initial_literals: &'a Vec<String>,

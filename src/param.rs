@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, hash};
 
 use icu::locid::Locale;
 use icu_decimal::FixedDecimalFormatter;
@@ -15,11 +15,34 @@ impl From<ParamValueInner> for ParamValue {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Eq)]
 enum ParamValueInner {
     Int(i64),
     Dec(OrderedFloat<f64>),
     String(Cow<'static, str>),
+}
+
+impl PartialEq for ParamValueInner {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Dec(a), Self::Dec(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Int(a), Self::Dec(b)) => OrderedFloat(*a as f64) == *b,
+            (Self::Dec(a), Self::Int(b)) => *a == OrderedFloat(*b as f64),
+            _ => false,
+        }
+    }
+}
+
+impl hash::Hash for ParamValueInner {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ParamValueInner::Int(a) => OrderedFloat(*a as f64).hash(state),
+            ParamValueInner::Dec(a) => a.hash(state),
+            ParamValueInner::String(a) => a.hash(state),
+        }
+    }
 }
 
 pub(crate) const OTHER: ParamValue = ParamValue::from_static_str("other");
