@@ -28,18 +28,28 @@ impl PartialEq for ParamValueInner {
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::Dec(a), Self::Dec(b)) => a == b,
             (Self::String(a), Self::String(b)) => a == b,
-            (Self::Int(a), Self::Dec(b)) => OrderedFloat(*a as f64) == *b,
-            (Self::Dec(a), Self::Int(b)) => *a == OrderedFloat(*b as f64),
+            (Self::Int(a), Self::Dec(b)) => Some(*a) == as_integer(b.into_inner()),
+            (Self::Dec(a), Self::Int(b)) => as_integer(a.into_inner()) == Some(*b),
             _ => false,
         }
     }
 }
 
+fn as_integer(x: f64) -> Option<i64> {
+    (x.is_finite() && x.fract() == 0.0).then_some(x as i64)
+}
+
 impl hash::Hash for ParamValueInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         match self {
-            ParamValueInner::Int(a) => OrderedFloat(*a as f64).hash(state),
-            ParamValueInner::Dec(a) => a.hash(state),
+            ParamValueInner::Int(a) => a.hash(state),
+            ParamValueInner::Dec(a) => {
+                if let Some(a_int) = as_integer(a.into_inner()) {
+                    a_int.hash(state);
+                } else {
+                    a.hash(state);
+                }
+            }
             ParamValueInner::String(a) => a.hash(state),
         }
     }
