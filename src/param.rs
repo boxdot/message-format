@@ -151,3 +151,48 @@ impl fmt::Display for ParamValue {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hash::{DefaultHasher, Hasher};
+    use quickcheck_macros::quickcheck;
+
+    use super::*;
+
+    #[test]
+    fn test_as_integer() {
+        assert_eq!(as_integer(0.0), Some(0));
+        assert_eq!(as_integer(1.0), Some(1));
+        assert_eq!(as_integer(f64::MAX.trunc()), Some(i64::MAX));
+        assert_eq!(as_integer(f64::MIN.trunc()), Some(i64::MIN));
+        assert_eq!(as_integer(0.1), None);
+        assert_eq!(as_integer(f64::NAN), None);
+        assert_eq!(as_integer(f64::MIN_POSITIVE), None);
+        assert_eq!(as_integer(1.0 + f64::MIN_POSITIVE), Some(1));
+        assert_eq!(as_integer(42.0), Some(42));
+    }
+
+    #[test]
+    fn test_int_float_eq() {
+        assert_eq!(ParamValue::from(1.0), ParamValue::from(1));
+        assert_eq!(ParamValue::from(1), ParamValue::from(1.0));
+        assert_ne!(ParamValue::from(1.1), ParamValue::from(1));
+        assert_ne!(ParamValue::from(1), ParamValue::from(1.1));
+    }
+
+    fn hash<T: hash::Hash>(value: T) -> u64 {
+        let mut state = DefaultHasher::new();
+        value.hash(&mut state);
+        state.finish()
+    }
+
+    // a == b => hash(a) == hash(b) for a, b in {int, float}
+    #[quickcheck]
+    fn prop_reverse_reverse(x: i64, y: f64) -> bool {
+        let a = ParamValue::from(x);
+        let b = ParamValue::from(y);
+        let c = ParamValue::from(y);
+        let d = ParamValue::from(x);
+        (a != b || hash(a) == hash(b)) && (c != d || hash(c) == hash(d))
+    }
+}
