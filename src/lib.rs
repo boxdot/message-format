@@ -1,8 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 
 use format::Formatter;
 use icu::locid::Locale;
-use once_cell::sync::Lazy;
 use param::{ARGUMENT_NAME, ARGUMENT_OFFSET, OTHER};
 use regex::{Captures, Regex};
 
@@ -11,15 +10,15 @@ pub use param::ParamValue;
 mod format;
 mod param;
 
-static PLURAL_BLOCK_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\s*(\w+)\s*,\s*plural\s*,(?:\s*offset:(\d+))?").unwrap());
-static ORDINAL_BLOCK_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\s*(\w+)\s*,\s*selectordinal\s*,").unwrap());
-static SELECT_BLOCK_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\s*(\w+)\s*,\s*select\s*,").unwrap());
+static PLURAL_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\w+)\s*,\s*plural\s*,(?:\s*offset:(\d+))?").unwrap());
+static ORDINAL_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\w+)\s*,\s*selectordinal\s*,").unwrap());
+static SELECT_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(\w+)\s*,\s*select\s*,").unwrap());
 
-static KV_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*=?(\w+)\s*").unwrap());
-static WHITESPACES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+static KV_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*=?(\w+)\s*").unwrap());
+static WHITESPACES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 #[derive(Debug)]
 pub struct MessageFormat<'l> {
@@ -99,8 +98,8 @@ impl<'l> MessageFormat<'l> {
     }
 
     fn insert_placeholders(&mut self, pattern: String) -> String {
-        static DOUBLE_APOSTROPHE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"''").unwrap());
-        static LITERAL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"'([{}#].*?)'").unwrap());
+        static DOUBLE_APOSTROPHE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"''").unwrap());
+        static LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'([{}#].*?)'").unwrap());
 
         let pattern = DOUBLE_APOSTROPHE_RE.replace_all(&pattern, |_caps: &Captures| {
             Self::build_placeholder(&mut self.initial_literals, "'")
@@ -120,12 +119,12 @@ impl<'l> MessageFormat<'l> {
 
     fn parse_block(&mut self, pattern: String) -> Vec<Block> {
         let mut result = Vec::new();
-        let parts = self.extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern);
         for part in parts {
             let block = match part.typ {
                 ElementType::String => Block::String(part.value),
                 ElementType::Block => {
-                    let block_type = self.parse_block_type(&part.value);
+                    let block_type = Self::parse_block_type(&part.value);
                     match block_type {
                         BlockType::Select => Block::Select(self.parse_select_block(&part.value)),
                         BlockType::Plural => Block::Plural(self.parse_plural_block(&part.value)),
@@ -142,8 +141,8 @@ impl<'l> MessageFormat<'l> {
         result
     }
 
-    fn extract_parts(&mut self, pattern: &str) -> Vec<ElementTypeAndVal> {
-        static BRACES_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[{}]").unwrap());
+    fn extract_parts(pattern: &str) -> Vec<ElementTypeAndVal> {
+        static BRACES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[{}]").unwrap());
 
         let mut prev_pos = 0;
         let mut brace_stack: Vec<char> = Vec::new();
@@ -188,8 +187,8 @@ impl<'l> MessageFormat<'l> {
         results
     }
 
-    fn parse_block_type(&self, value: &str) -> BlockType {
-        static SIMPLE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s*\w").unwrap());
+    fn parse_block_type(value: &str) -> BlockType {
+        static SIMPLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*\w").unwrap());
 
         if PLURAL_BLOCK_RE.is_match(value) {
             BlockType::Plural
@@ -218,7 +217,7 @@ impl<'l> MessageFormat<'l> {
             vec![Block::String(argument_name.expect("logic error"))],
         );
 
-        let parts = self.extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern);
 
         // looking for (key block)+ sequence
         let mut pos = 0;
@@ -268,7 +267,7 @@ impl<'l> MessageFormat<'l> {
             vec![Block::String(argument_offset.to_string())],
         );
 
-        let parts = self.extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern);
 
         // looking for (key block)+ sequence
         let mut pos = 0;
@@ -311,7 +310,7 @@ impl<'l> MessageFormat<'l> {
         result.insert(ARGUMENT_NAME, vec![Block::String(argument_name.unwrap())]);
         result.insert(ARGUMENT_OFFSET, vec![Block::String("0".to_owned())]);
 
-        let parts = self.extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern);
 
         // looking for (key block)+ sequence
         let mut pos = 0;

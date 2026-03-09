@@ -1,6 +1,5 @@
 use std::{borrow::Cow, fmt, hash};
 
-use icu::locid::Locale;
 use icu_decimal::FixedDecimalFormatter;
 use ordered_float::OrderedFloat;
 
@@ -76,18 +75,12 @@ impl ParamValue {
         }
     }
 
-    pub(crate) fn format_with_locale(&self, locale: &Locale) -> String {
+    pub(crate) fn format_with_fdf(&self, fdf: &FixedDecimalFormatter) -> String {
         match &self.inner {
-            ParamValueInner::Int(value) => {
-                let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
-                    .expect("missing locale");
-                fdf.format_to_string(&(*value).into())
-            }
+            ParamValueInner::Int(value) => fdf.format_to_string(&(*value).into()),
             ParamValueInner::Dec(value) => {
                 let value_str = value.to_string();
-                if let Ok(fixed_dec) = value.to_string().parse() {
-                    let fdf = FixedDecimalFormatter::try_new(&locale.into(), Default::default())
-                        .expect("missing locale");
+                if let Ok(fixed_dec) = value_str.parse() {
                     fdf.format_to_string(&fixed_dec)
                 } else {
                     value_str

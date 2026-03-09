@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use icu::{
     locid::Locale,
-    plurals::{PluralCategory, PluralOperands, PluralRules},
+    plurals::{PluralCategory, PluralOperands, PluralRuleType, PluralRules},
 };
 use icu_decimal::FixedDecimalFormatter;
 
@@ -15,6 +15,7 @@ pub(crate) struct Formatter<'a> {
     parsed_pattern: &'a Vec<Block>,
     ignore_pound: bool,
     fdf: Option<FixedDecimalFormatter>,
+    plural_rules: Option<PluralRules>,
 }
 
 impl<'a> Formatter<'a> {
@@ -30,12 +31,20 @@ impl<'a> Formatter<'a> {
             initial_literals,
             ignore_pound,
             fdf: Default::default(),
+            plural_rules: Default::default(),
         }
     }
 
     fn fixed_decimal_formatter(&mut self) -> &FixedDecimalFormatter {
         self.fdf.get_or_insert_with(|| {
             FixedDecimalFormatter::try_new(&self.locale.into(), Default::default())
+                .expect("missing locale")
+        })
+    }
+
+    fn get_plural_rules(&mut self) -> &PluralRules {
+        self.plural_rules.get_or_insert_with(|| {
+            PluralRules::try_new(&self.locale.into(), PluralRuleType::Cardinal)
                 .expect("missing locale")
         })
     }
@@ -90,29 +99,19 @@ impl<'a> Formatter<'a> {
                     self.format_select_block(map_pattern, named_parameters, literals, result);
                 }
                 Block::Plural(value) => {
-                    self.format_plural_ordinal_block(
-                        value,
-                        named_parameters,
-                        literals,
-                        plural_rules_select,
-                        result,
-                    );
+                    self.format_plural_ordinal_block(value, named_parameters, literals, result);
                 }
                 Block::Ordinal(value) => {
-                    self.format_plural_ordinal_block(
-                        value,
-                        named_parameters,
-                        literals,
-                        ordinal_rules_select,
-                        result,
-                    );
+                    // Ordinals are not supported, falls back to cardinal rules.
+                    // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
+                    self.format_plural_ordinal_block(value, named_parameters, literals, result);
                 }
             }
         }
     }
 
     fn format_simple_placeholder(
-        &self,
+        &mut self,
         param: &str,
         named_parameters: &HashMap<String, ParamValue>,
         literals: &mut Vec<String>,
@@ -122,7 +121,7 @@ impl<'a> Formatter<'a> {
             result.push(format!("Undefined parameter - {param}"));
             return;
         };
-        let value = value.format_with_locale(self.locale);
+        let value = value.format_with_fdf(self.fixed_decimal_formatter());
         let placeholder = placeholder(literals.len());
         literals.push(value);
         result.push(placeholder);
@@ -162,7 +161,6 @@ impl<'a> Formatter<'a> {
         parsed_blocks: &HashMap<ParamValue, Vec<Block>>,
         named_parameters: &HashMap<String, ParamValue>,
         literals: &mut Vec<String>,
-        plural_selector: impl Fn(PluralOperands, &Locale) -> &'static str,
         result: &mut Vec<String>,
     ) {
         let Some(Block::String(argument_name)) = parsed_blocks
@@ -198,11 +196,19 @@ impl<'a> Formatter<'a> {
         let option = match parsed_blocks.get(&named_parameters[argument_name]) {
             Some(option) => option,
             None => {
-                let Ok(diff_fixed_decimal) = diff.abs().to_string().parse() else {
+                let Ok(diff_fixed_decimal) = diff.abs().to_string().parse::<PluralOperands>()
+                else {
                     result.push(format!("Invalid parameter - {diff}"));
                     return;
                 };
-                let item = plural_selector(diff_fixed_decimal, self.locale);
+                let item = match self.get_plural_rules().category_for(diff_fixed_decimal) {
+                    PluralCategory::Zero => "zero",
+                    PluralCategory::One => "one",
+                    PluralCategory::Two => "two",
+                    PluralCategory::Few => "few",
+                    PluralCategory::Many => "many",
+                    PluralCategory::Other => "other",
+                };
                 let Some(option) = parsed_blocks
                     .get(&item.to_owned().into())
                     .or_else(|| parsed_blocks.get(&OTHER))
@@ -228,23 +234,4 @@ impl<'a> Formatter<'a> {
             result.push(plural.replace('#', &diff_formatted));
         }
     }
-}
-
-fn plural_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
-    let rule = PluralRules::try_new(&locale.into(), icu::plurals::PluralRuleType::Cardinal)
-        .expect("missing locale");
-    match rule.category_for(n) {
-        PluralCategory::Zero => "zero",
-        PluralCategory::One => "one",
-        PluralCategory::Two => "two",
-        PluralCategory::Few => "few",
-        PluralCategory::Many => "many",
-        PluralCategory::Other => "other",
-    }
-}
-
-fn ordinal_rules_select(n: PluralOperands, locale: &Locale) -> &'static str {
-    // Ordinals are not supported
-    // <https://github.com/dart-lang/i18n/blob/98e7b4aea2e6ff613ec273ca29f58938d9c5b23d/pkgs/intl/lib/message_format.dart#L771>
-    plural_rules_select(n, locale)
 }
