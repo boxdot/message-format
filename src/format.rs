@@ -6,7 +6,7 @@ use icu::{
 };
 use icu_decimal::DecimalFormatter;
 
-use crate::{placeholder, Block, ParamValue, OTHER};
+use crate::{Block, OTHER, ParamValue, placeholder};
 
 #[derive(Debug)]
 pub(crate) struct Formatter<'a> {

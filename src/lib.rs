@@ -5,8 +5,10 @@ use icu::locale::Locale;
 use param::{ARGUMENT_NAME, ARGUMENT_OFFSET, OTHER};
 use regex::{Captures, Regex};
 
+pub use error::{BlockKind, ParseError};
 pub use param::ParamValue;
 
+mod error;
 mod format;
 mod param;
 
@@ -38,14 +40,14 @@ impl<'l> MessageFormat<'l> {
         }
     }
 
-    pub fn format(&mut self) -> String {
+    pub fn format(&mut self) -> Result<String, ParseError> {
         self.format_impl(false, None)
     }
 
     pub fn format_with_params(
         &mut self,
         named_parameters: impl IntoIterator<Item = (impl Into<String>, ParamValue)>,
-    ) -> String {
+    ) -> Result<String, ParseError> {
         self.format_impl(
             false,
             Some(
@@ -60,7 +62,7 @@ impl<'l> MessageFormat<'l> {
     pub fn format_ignoring_pound(
         &mut self,
         named_parameters: impl IntoIterator<Item = (impl Into<String>, ParamValue)>,
-    ) -> String {
+    ) -> Result<String, ParseError> {
         self.format_impl(
             true,
             Some(
@@ -76,25 +78,26 @@ impl<'l> MessageFormat<'l> {
         &mut self,
         ignore_pound: bool,
         named_parameters: Option<HashMap<String, ParamValue>>,
-    ) -> String {
-        self.init();
+    ) -> Result<String, ParseError> {
+        self.init()?;
 
-        Formatter::new(
+        Ok(Formatter::new(
             self.locale,
             &self.initial_literals,
             &self.parsed_pattern,
             ignore_pound,
         )
-        .format(named_parameters)
+        .format(named_parameters))
     }
 
-    fn init(&mut self) {
+    fn init(&mut self) -> Result<(), ParseError> {
         if let Some(pattern) = self.pattern.take() {
             self.initial_literals = Default::default();
             let pattern = self.insert_placeholders(pattern);
 
-            self.parsed_pattern = self.parse_block(pattern);
+            self.parsed_pattern = self.parse_block(pattern)?;
         }
+        Ok(())
     }
 
     fn insert_placeholders(&mut self, pattern: String) -> String {
@@ -117,31 +120,33 @@ impl<'l> MessageFormat<'l> {
         placeholder(idx)
     }
 
-    fn parse_block(&mut self, pattern: String) -> Vec<Block> {
+    fn parse_block(&mut self, pattern: String) -> Result<Vec<Block>, ParseError> {
         let mut result = Vec::new();
-        let parts = Self::extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern)?;
         for part in parts {
             let block = match part.typ {
                 ElementType::String => Block::String(part.value),
                 ElementType::Block => {
                     let block_type = Self::parse_block_type(&part.value);
                     match block_type {
-                        BlockType::Select => Block::Select(self.parse_select_block(&part.value)),
-                        BlockType::Plural => Block::Plural(self.parse_plural_block(&part.value)),
-                        BlockType::Ordinal => Block::Ordinal(self.parse_ordinal_block(&part.value)),
+                        BlockType::Select => Block::Select(self.parse_select_block(&part.value)?),
+                        BlockType::Plural => Block::Plural(self.parse_plural_block(&part.value)?),
+                        BlockType::Ordinal => {
+                            Block::Ordinal(self.parse_ordinal_block(&part.value)?)
+                        }
                         BlockType::Simple => Block::Simple(part.value),
                         BlockType::Unknown => {
-                            panic!("unknown block type for pattern {}", part.value);
+                            return Err(ParseError::UnknownBlockType(part.value));
                         }
                     }
                 }
             };
             result.push(block);
         }
-        result
+        Ok(result)
     }
 
-    fn extract_parts(pattern: &str) -> Vec<ElementTypeAndVal> {
+    fn extract_parts(pattern: &str) -> Result<Vec<ElementTypeAndVal>, ParseError> {
         static BRACES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[{}]").unwrap());
 
         let mut prev_pos = 0;
@@ -152,9 +157,11 @@ impl<'l> MessageFormat<'l> {
             let pos = m.start();
             if m.as_str() == "}" {
                 if let Some(brace) = brace_stack.pop() {
-                    assert_eq!(brace, '{', "No matching }} for {{");
+                    if brace != '{' {
+                        return Err(ParseError::UnmatchedClosingBrace);
+                    }
                 } else {
-                    panic!("No matching {{ for }}");
+                    return Err(ParseError::UnmatchedClosingBrace);
                 }
                 if brace_stack.is_empty() {
                     // end of block
@@ -174,17 +181,16 @@ impl<'l> MessageFormat<'l> {
             }
         }
 
-        assert!(
-            brace_stack.is_empty(),
-            "There are mismatched {{ or }} in the pattern"
-        );
+        if !brace_stack.is_empty() {
+            return Err(ParseError::UnclosedBrace);
+        }
 
         let substr = &pattern[prev_pos..];
         if !substr.is_empty() {
             results.push(ElementTypeAndVal::new(ElementType::String, substr));
         }
 
-        results
+        Ok(results)
     }
 
     fn parse_block_type(value: &str) -> BlockType {
@@ -203,7 +209,10 @@ impl<'l> MessageFormat<'l> {
         }
     }
 
-    fn parse_select_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
+    fn parse_select_block(
+        &mut self,
+        pattern: &str,
+    ) -> Result<HashMap<ParamValue, Vec<Block>>, ParseError> {
         let mut argument_name = None;
         let pattern = SELECT_BLOCK_RE.replace(pattern, |caps: &Captures| {
             // string, name
@@ -214,10 +223,10 @@ impl<'l> MessageFormat<'l> {
         let mut result = HashMap::new();
         result.insert(
             ARGUMENT_NAME,
-            vec![Block::String(argument_name.expect("logic error"))],
+            vec![Block::String(argument_name.expect("invalid select regex"))],
         );
 
-        let parts = Self::extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern)?;
 
         // looking for (key block)+ sequence
         let mut pos = 0;
@@ -226,12 +235,17 @@ impl<'l> MessageFormat<'l> {
             let key = &part.value;
 
             pos += 1;
-            assert!(pos < parts.len(), "missing or invalid select value element");
+            if pos >= parts.len() {
+                return Err(ParseError::MissingBlockValue {
+                    block: BlockKind::Select,
+                });
+            }
+
             let part = &parts[pos];
 
             let value = match part.typ {
-                ElementType::Block => self.parse_block(part.value.clone()),
-                ElementType::String => panic!("assert_eqed block type"),
+                ElementType::Block => self.parse_block(part.value.clone())?,
+                ElementType::String => unreachable!(),
             };
 
             let key = WHITESPACES_RE.replace_all(key, "");
@@ -241,33 +255,40 @@ impl<'l> MessageFormat<'l> {
             pos += 1;
         }
 
-        assert!(
-            result.contains_key(&OTHER),
-            "missing other key in select statement"
-        );
+        if !result.contains_key(&OTHER) {
+            return Err(ParseError::MissingOtherClause {
+                block: BlockKind::Select,
+            });
+        }
 
-        result
+        Ok(result)
     }
 
-    fn parse_plural_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
+    fn parse_plural_block(
+        &mut self,
+        pattern: &str,
+    ) -> Result<HashMap<ParamValue, Vec<Block>>, ParseError> {
         let mut argument_name = None;
         let mut argument_offset = 0;
         let pattern = PLURAL_BLOCK_RE.replace(pattern, |caps: &Captures| {
             argument_name = Some(caps[1].to_owned());
             if let Some(offset) = caps.get(2) {
-                argument_offset = offset.as_str().parse().unwrap();
+                argument_offset = offset.as_str().parse().expect("invalid plural regex");
             }
             ""
         });
 
         let mut result = HashMap::new();
-        result.insert(ARGUMENT_NAME, vec![Block::String(argument_name.unwrap())]);
+        result.insert(
+            ARGUMENT_NAME,
+            vec![Block::String(argument_name.expect("invalid plural regex"))],
+        );
         result.insert(
             ARGUMENT_OFFSET,
             vec![Block::String(argument_offset.to_string())],
         );
 
-        let parts = Self::extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern)?;
 
         // looking for (key block)+ sequence
         let mut pos = 0;
@@ -276,12 +297,17 @@ impl<'l> MessageFormat<'l> {
             let key = &part.value;
 
             pos += 1;
-            assert!(pos < parts.len(), "missing or invalid plural element");
+            if pos >= parts.len() {
+                return Err(ParseError::MissingBlockValue {
+                    block: BlockKind::Plural,
+                });
+            }
+
             let part = &parts[pos];
 
             let value = match part.typ {
-                ElementType::Block => self.parse_block(part.value.clone()),
-                ElementType::String => panic!("assert_eqed block type"),
+                ElementType::Block => self.parse_block(part.value.clone())?,
+                ElementType::String => unreachable!(),
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
@@ -291,15 +317,19 @@ impl<'l> MessageFormat<'l> {
             pos += 1;
         }
 
-        assert!(
-            result.contains_key(&OTHER),
-            "missing other key in plural statement"
-        );
+        if !result.contains_key(&OTHER) {
+            return Err(ParseError::MissingOtherClause {
+                block: BlockKind::Plural,
+            });
+        }
 
-        result
+        Ok(result)
     }
 
-    fn parse_ordinal_block(&mut self, pattern: &str) -> HashMap<ParamValue, Vec<Block>> {
+    fn parse_ordinal_block(
+        &mut self,
+        pattern: &str,
+    ) -> Result<HashMap<ParamValue, Vec<Block>>, ParseError> {
         let mut argument_name = None;
         let pattern = ORDINAL_BLOCK_RE.replace(pattern, |caps: &Captures| {
             argument_name = Some(caps[1].to_owned());
@@ -307,10 +337,13 @@ impl<'l> MessageFormat<'l> {
         });
 
         let mut result = HashMap::new();
-        result.insert(ARGUMENT_NAME, vec![Block::String(argument_name.unwrap())]);
+        result.insert(
+            ARGUMENT_NAME,
+            vec![Block::String(argument_name.expect("invalid ordinal regex"))],
+        );
         result.insert(ARGUMENT_OFFSET, vec![Block::String("0".to_owned())]);
 
-        let parts = Self::extract_parts(&pattern);
+        let parts = Self::extract_parts(&pattern)?;
 
         // looking for (key block)+ sequence
         let mut pos = 0;
@@ -319,15 +352,17 @@ impl<'l> MessageFormat<'l> {
             let key = &part.value;
 
             pos += 1;
-            assert!(
-                pos < parts.len(),
-                "missing or invalid ordinal value element"
-            );
+            if pos >= parts.len() {
+                return Err(ParseError::MissingBlockValue {
+                    block: BlockKind::Ordinal,
+                });
+            }
+
             let part = &parts[pos];
 
             let value = match part.typ {
-                ElementType::Block => self.parse_block(part.value.clone()),
-                ElementType::String => panic!("assert_eqed block type"),
+                ElementType::Block => self.parse_block(part.value.clone())?,
+                ElementType::String => unreachable!(),
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
@@ -337,12 +372,13 @@ impl<'l> MessageFormat<'l> {
             pos += 1;
         }
 
-        assert!(
-            result.contains_key(&OTHER),
-            "missing other key in ordinal statement"
-        );
+        if !result.contains_key(&OTHER) {
+            return Err(ParseError::MissingOtherClause {
+                block: BlockKind::Ordinal,
+            });
+        }
 
-        result
+        Ok(result)
     }
 }
 
@@ -401,23 +437,21 @@ mod tests {
     fn test_empty_pattern() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("", &locale);
-        assert_eq!(fmt.format(), "");
+        assert_eq!(fmt.format().unwrap(), "");
     }
 
     #[test]
-    #[should_panic(expected = "No matching { for }")]
     fn test_missing_left_curly_brace() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("\'\'{}}", &locale);
-        fmt.format();
+        assert_eq!(fmt.format(), Err(ParseError::UnmatchedClosingBrace));
     }
 
     #[test]
-    #[should_panic(expected = "There are mismatched { or } in the pattern")]
     fn test_too_many_left_curly_braces() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("{} {", &locale);
-        fmt.format();
+        assert_eq!(fmt.format(), Err(ParseError::UnclosedBrace));
     }
 
     #[test]
@@ -425,7 +459,8 @@ mod tests {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("New York in {SEASON} is nice.", &locale);
         assert_eq!(
-            fmt.format_with_params([("SEASON", "the Summer".into())]),
+            fmt.format_with_params([("SEASON", "the Summer".into())])
+                .unwrap(),
             "New York in the Summer is nice."
         );
     }
@@ -442,19 +477,21 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male".into())]),
+            fmt.format_with_params([("GENDER", "male".into())]).unwrap(),
             "His bicycle is blue."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female".into())]),
+            fmt.format_with_params([("GENDER", "female".into())])
+                .unwrap(),
             "Her bicycle is red."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "other".into())]),
+            fmt.format_with_params([("GENDER", "other".into())])
+                .unwrap(),
             "Their bicycle is green."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "any".into())]),
+            fmt.format_with_params([("GENDER", "any".into())]).unwrap(),
             "Their bicycle is green."
         );
     }
@@ -471,7 +508,8 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Belgrade".into())]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Belgrade".into())])
+                .unwrap(),
             "I see no one at all in Belgrade."
         );
         assert_eq!(
@@ -479,7 +517,8 @@ mod tests {
                 ("NUM_PEOPLE", 1.into()),
                 ("PERSON", "Markus".into()),
                 ("PLACE", "Berlin".into())
-            ]),
+            ])
+            .unwrap(),
             "I see Markus in Berlin."
         );
         assert_eq!(
@@ -487,7 +526,8 @@ mod tests {
                 ("NUM_PEOPLE", 2.into()),
                 ("PERSON", "Mark".into()),
                 ("PLACE", "Athens".into())
-            ]),
+            ])
+            .unwrap(),
             "I see Mark and one other person in Athens."
         );
         assert_eq!(
@@ -495,7 +535,8 @@ mod tests {
                 ("NUM_PEOPLE", 100.into()),
                 ("PERSON", "Cibu".into()),
                 ("PLACE", "the cubes".into())
-            ]),
+            ])
+            .unwrap(),
             "I see Cibu and 99 other people in the cubes."
         );
     }
@@ -518,7 +559,8 @@ mod tests {
                 ("GENDER", "female".into()),
                 ("WHO", "Jelena".into()),
                 ("CIRCLES", 1.into())
-            ]),
+            ])
+            .unwrap(),
             "Jelena added you to her circle",
         );
         assert_eq!(
@@ -526,7 +568,8 @@ mod tests {
                 ("GENDER", "male".into()),
                 ("WHO", "Milan".into()),
                 ("CIRCLES", 1234.into())
-            ]),
+            ])
+            .unwrap(),
             "Milan added you to his 1,234 circles",
         );
     }
@@ -551,7 +594,8 @@ mod tests {
                 ("GENDER", "female".into()),
                 ("WHO", "Jelena".into()),
                 ("NUM_GROUPS", 1.into())
-            ]),
+            ])
+            .unwrap(),
             "Jelena added you to her group",
         );
         assert_eq!(
@@ -559,7 +603,8 @@ mod tests {
                 ("GENDER", "male".into()),
                 ("WHO", "Milan".into()),
                 ("NUM_GROUPS", 1234.into())
-            ]),
+            ])
+            .unwrap(),
             "Milan added you to his 1,234 groups",
         );
     }
@@ -572,7 +617,7 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 5.into())]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]).unwrap(),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
     }
@@ -585,11 +630,11 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 5.into())]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]).unwrap(),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 8.into())]),
+            fmt.format_with_params([("NUM_COWS", 8.into())]).unwrap(),
             "Anna's house has {0} and # in the roof and 8 cows."
         );
     }
@@ -602,11 +647,11 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 5.into())]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]).unwrap(),
             "Anna's house has {0} and # in the roof and 5 cows."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 10.into())]),
+            fmt.format_with_params([("NUM_COWS", 10.into())]).unwrap(),
             "Anna's house has {0} and # in the roof and 10 cows."
         );
     }
@@ -616,7 +661,7 @@ mod tests {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("Anna's house 'has {NUM_COWS} cows'.", &locale);
         assert_eq!(
-            fmt.format_with_params([("NUM_COWS", 5.into())]),
+            fmt.format_with_params([("NUM_COWS", 5.into())]).unwrap(),
             "Anna's house 'has 5 cows'."
         );
     }
@@ -625,14 +670,17 @@ mod tests {
     fn test_consecutive_single_quotes_are_replaced_with_one_single_quote() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("Anna''s house a'{''''b'", &locale);
-        assert_eq!(fmt.format(), "Anna's house a{''b");
+        assert_eq!(fmt.format().unwrap(), "Anna's house a{''b");
     }
 
     #[test]
     fn test_consecutive_single_quotes_before_special_char_dont_create_literal() {
         let locale = locale!("en");
         let mut fmt = MessageFormat::new("a''{NUM_COWS}'b", &locale);
-        assert_eq!(fmt.format_with_params([("NUM_COWS", 5.into())]), "a'5'b");
+        assert_eq!(
+            fmt.format_with_params([("NUM_COWS", 5.into())]).unwrap(),
+            "a'5'b"
+        );
     }
 
     #[test]
@@ -645,11 +693,12 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("GENDER", "male".into())]),
+            fmt.format_with_params([("GENDER", "male".into())]).unwrap(),
             "Njegov bicikl je plav."
         );
         assert_eq!(
-            fmt.format_with_params([("GENDER", "female".into())]),
+            fmt.format_with_params([("GENDER", "female".into())])
+                .unwrap(),
             "Njen bicikl je crven."
         );
     }
@@ -670,7 +719,8 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())])
+                .unwrap(),
             "Ja ne vidim nikoga u Beogradu."
         );
         assert_eq!(
@@ -678,7 +728,8 @@ mod tests {
                 ("NUM_PEOPLE", 1.into()),
                 ("PERSON", "Markusa".into()),
                 ("PLACE", "Berlinu".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Markusa u Berlinu."
         );
         assert_eq!(
@@ -686,7 +737,8 @@ mod tests {
                 ("NUM_PEOPLE", 2.into()),
                 ("PERSON", "Marka".into()),
                 ("PLACE", "Atini".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Marka i jos 1 osobu u Atini."
         );
         assert_eq!(
@@ -694,7 +746,8 @@ mod tests {
                 ("NUM_PEOPLE", 4.into()),
                 ("PERSON", "Petra".into()),
                 ("PLACE", "muzeju".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Petra i jos 3 osobe u muzeju."
         );
         assert_eq!(
@@ -702,7 +755,8 @@ mod tests {
                 ("NUM_PEOPLE", 100.into()),
                 ("PERSON", "Cibua".into()),
                 ("PLACE", "bazenu".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Cibua i jos 99 osoba u bazenu."
         );
     }
@@ -723,7 +777,8 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())]),
+            fmt.format_with_params([("NUM_PEOPLE", 0.into()), ("PLACE", "Beogradu".into())])
+                .unwrap(),
             "Ja ne vidim nikoga u Beogradu."
         );
         assert_eq!(
@@ -731,7 +786,8 @@ mod tests {
                 ("NUM_PEOPLE", 1.into()),
                 ("PERSON", "Markusa".into()),
                 ("PLACE", "Berlinu".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Markusa u Berlinu."
         );
         assert_eq!(
@@ -739,7 +795,8 @@ mod tests {
                 ("NUM_PEOPLE", 21.into()),
                 ("PERSON", "Marka".into()),
                 ("PLACE", "Atini".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Marka i jos 21 osobu u Atini."
         );
         assert_eq!(
@@ -747,7 +804,8 @@ mod tests {
                 ("NUM_PEOPLE", 3.into()),
                 ("PERSON", "Petra".into()),
                 ("PLACE", "muzeju".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Petra i jos 3 osobe u muzeju."
         );
         assert_eq!(
@@ -755,7 +813,8 @@ mod tests {
                 ("NUM_PEOPLE", 100.into()),
                 ("PERSON", "Cibua".into()),
                 ("PLACE", "bazenu".into())
-            ]),
+            ])
+            .unwrap(),
             "Ja vidim Cibua i jos 100 osoba u bazenu."
         );
     }
@@ -785,7 +844,8 @@ mod tests {
                 ("GENDER", "female".into()),
                 ("WHO", "Jelena".into()),
                 ("CIRCLES", 21.into())
-            ]),
+            ])
+            .unwrap(),
             "Jelena vas je dodala u njen 21 kruzok"
         );
         assert_eq!(
@@ -793,7 +853,8 @@ mod tests {
                 ("GENDER", "female".into()),
                 ("WHO", "Jelena".into()),
                 ("CIRCLES", 3.into())
-            ]),
+            ])
+            .unwrap(),
             "Jelena vas je dodala u njena 3 kruzoka"
         );
         assert_eq!(
@@ -801,7 +862,8 @@ mod tests {
                 ("GENDER", "female".into()),
                 ("WHO", "Jelena".into()),
                 ("CIRCLES", 5.into())
-            ]),
+            ])
+            .unwrap(),
             "Jelena vas je dodala u njenih 5 kruzoka"
         );
         assert_eq!(
@@ -809,7 +871,8 @@ mod tests {
                 ("GENDER", "male".into()),
                 ("WHO", "Milan".into()),
                 ("CIRCLES", 1235.into())
-            ]),
+            ])
+            .unwrap(),
             "Milan vas je dodao u njegovih 1.235 kruzoka"
         );
     }
@@ -824,27 +887,29 @@ mod tests {
 
         // These numbers exercise all cases for the arabic plural rules.
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 0.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 0.into())]).unwrap(),
             "0 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 1.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 1.into())]).unwrap(),
             "1 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 2.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 2.into())]).unwrap(),
             "2 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 3.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 3.into())]).unwrap(),
             "3 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 11.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 11.into())])
+                .unwrap(),
             "11 minutes"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_MINUTES", 1.5.into())]),
+            fmt.format_with_params([("NUM_MINUTES", 1.5.into())])
+                .unwrap(),
             "1,5 minutes"
         );
     }
@@ -857,10 +922,22 @@ mod tests {
             &locale,
         );
 
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "-1");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 1.into())]), "0");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 2.into())]), "1");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 21.into())]), "20");
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 0.into())]).unwrap(),
+            "-1"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 1.into())]).unwrap(),
+            "0"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 2.into())]).unwrap(),
+            "1"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 21.into())]).unwrap(),
+            "20"
+        );
     }
 
     #[test]
@@ -870,12 +947,14 @@ mod tests {
 
         // Test pound sign.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())]),
+            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())])
+                .unwrap(),
             "10 group#1"
         );
         // Test other special characters in parameters, like { and }.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "} {".into())]),
+            fmt.format_with_params([("SOME_NUM", 10.into()), ("GROUP", "} {".into())])
+                .unwrap(),
             "10 } {"
         );
     }
@@ -887,13 +966,14 @@ mod tests {
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
-            fmt.format_with_params([("A", 10.into())]),
+            fmt.format_with_params([("A", 10.into())]).unwrap(),
             "Undefined parameter - SOME_NUM"
         );
 
         // Value is not a number.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "Value".into())]),
+            fmt.format_with_params([("SOME_NUM", "Value".into())])
+                .unwrap(),
             "Invalid parameter - SOME_NUM"
         );
     }
@@ -905,7 +985,7 @@ mod tests {
 
         // Key name doesn"t match A != GENDER.
         assert_eq!(
-            fmt.format_with_params([("A", "female".into())]),
+            fmt.format_with_params([("A", "female".into())]).unwrap(),
             "Undefined parameter - GENDER"
         );
     }
@@ -917,7 +997,7 @@ mod tests {
 
         // Key name doesn"t match A != result.
         assert_eq!(
-            fmt.format_with_params([("A", "none".into())]),
+            fmt.format_with_params([("A", "none".into())]).unwrap(),
             "Undefined parameter - result"
         );
     }
@@ -937,28 +1017,42 @@ mod tests {
             &locale,
         );
 
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 0.into())]), "none");
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", 1.into())]),
+            fmt.format_with_params([("SOME_NUM", 0.into())]).unwrap(),
+            "none"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 1.into())]).unwrap(),
             "exactly one"
         );
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 21.into())]), "21 one");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 23.into())]), "23 few");
-        assert_eq!(fmt.format_with_params([("SOME_NUM", 17.into())]), "17 many");
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", 100.into())]),
+            fmt.format_with_params([("SOME_NUM", 21.into())]).unwrap(),
+            "21 one"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 23.into())]).unwrap(),
+            "23 few"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 17.into())]).unwrap(),
+            "17 many"
+        );
+        assert_eq!(
+            fmt.format_with_params([("SOME_NUM", 100.into())]).unwrap(),
             "100 many"
         );
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", 1.4.into())]),
+            fmt.format_with_params([("SOME_NUM", 1.4.into())]).unwrap(),
             "1,4 other"
         );
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "10.0".into())]),
+            fmt.format_with_params([("SOME_NUM", "10.0".into())])
+                .unwrap(),
             "10 many"
         );
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "100.00".into())]),
+            fmt.format_with_params([("SOME_NUM", "100.00".into())])
+                .unwrap(),
             "100 many"
         );
     }
@@ -970,12 +1064,14 @@ mod tests {
 
         // Test pound sign.
         assert_eq!(
-            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())]),
+            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "group#1".into())])
+                .unwrap(),
             "# group#1"
         );
         // Test other special characters in parameters, like { and }.
         assert_eq!(
-            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "} {".into())]),
+            fmt.format_ignoring_pound([("SOME_NUM", 10.into()), ("GROUP", "} {".into())])
+                .unwrap(),
             "# } {"
         );
     }
@@ -997,7 +1093,8 @@ mod tests {
                 ("NUM_PEOPLE", 100.into()),
                 ("PERSON", "Cibu".into()),
                 ("PLACE", "the cubes".into())
-            ]),
+            ])
+            .unwrap(),
             "I see Cibu and # other people in the cubes."
         );
     }
@@ -1015,21 +1112,30 @@ mod tests {
 
         // Checking that the decision is done after the offset is substracted
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())])
+                .unwrap(),
             "Few -3"
         );
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 1.into())]), "One -1");
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", 1.into())]).unwrap(),
+            "One -1"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())])
+                .unwrap(),
             "Few -5"
         );
-        assert_eq!(fmt.format_with_params([("NUM_FLOOR", 3.into())]), "One 1");
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-25_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", 3.into())]).unwrap(),
+            "One 1"
+        );
+        assert_eq!(
+            fmt.format_with_params([("NUM_FLOOR", (-25_i64).into())])
+                .unwrap(),
             "Other -27"
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 25.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 25.into())]).unwrap(),
             "Other 23"
         );
     }
@@ -1049,28 +1155,28 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 1.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 1.into())]).unwrap(),
             "Take the elevator to the 1st floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 2.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 2.into())]).unwrap(),
             "Take the elevator to the 2nd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 3.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 3.into())]).unwrap(),
             "Take the elevator to the 3rd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 4.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 4.into())]).unwrap(),
             "Take the elevator to the 4th floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 23.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 23.into())]).unwrap(),
             "Take the elevator to the 23rd floor."
         );
         // Esoteric example.
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", 0.into())]),
+            fmt.format_with_params([("NUM_FLOOR", 0.into())]).unwrap(),
             "Take the elevator to the 0th floor."
         );
     }
@@ -1090,19 +1196,23 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-1_i64).into())])
+                .unwrap(),
             "Take the elevator to the -1st floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-2_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-2_i64).into())])
+                .unwrap(),
             "Take the elevator to the -2nd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-3_i64).into())])
+                .unwrap(),
             "Take the elevator to the -3rd floor."
         );
         assert_eq!(
-            fmt.format_with_params([("NUM_FLOOR", (-4_i64).into())]),
+            fmt.format_with_params([("NUM_FLOOR", (-4_i64).into())])
+                .unwrap(),
             "Take the elevator to the -4th floor."
         );
     }
@@ -1120,7 +1230,8 @@ mod tests {
         );
 
         assert_eq!(
-            fmt.format_ignoring_pound([("NUM_FLOOR", 100.into())]),
+            fmt.format_ignoring_pound([("NUM_FLOOR", 100.into())])
+                .unwrap(),
             "Take the elevator to the #th floor."
         );
     }
@@ -1133,13 +1244,14 @@ mod tests {
 
         // Key name doesn"t match A != SOME_NUM.
         assert_eq!(
-            fmt.format_with_params([("A", 10.into())]),
+            fmt.format_with_params([("A", 10.into())]).unwrap(),
             "Undefined or invalid parameter - SOME_NUM"
         );
 
         // Value is not a number.
         assert_eq!(
-            fmt.format_with_params([("SOME_NUM", "Value".into())]),
+            fmt.format_with_params([("SOME_NUM", "Value".into())])
+                .unwrap(),
             "Undefined or invalid parameter - SOME_NUM"
         );
     }
@@ -1152,15 +1264,15 @@ mod tests {
             &locale,
         );
         assert_eq!(
-            fmt.format_with_params([("n", 0.0.into())]),
+            fmt.format_with_params([("n", 0.0.into())]).unwrap(),
             "No more messages"
         );
         assert_eq!(
-            fmt.format_with_params([("n", 1.0.into())]),
+            fmt.format_with_params([("n", 1.0.into())]).unwrap(),
             "1 more message"
         );
         assert_eq!(
-            fmt.format_with_params([("n", 10.0.into())]),
+            fmt.format_with_params([("n", 10.0.into())]).unwrap(),
             "10 more messages"
         );
     }
