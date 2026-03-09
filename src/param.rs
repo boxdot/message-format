@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt, hash};
 
-use icu_decimal::FixedDecimalFormatter;
+use icu_decimal::DecimalFormatter;
 use ordered_float::OrderedFloat;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -75,7 +75,7 @@ impl ParamValue {
         }
     }
 
-    pub(crate) fn format_with_fdf(&self, fdf: &FixedDecimalFormatter) -> String {
+    pub(crate) fn format_with_fdf(&self, fdf: &DecimalFormatter) -> String {
         match &self.inner {
             ParamValueInner::Int(value) => fdf.format_to_string(&(*value).into()),
             ParamValueInner::Dec(value) => {

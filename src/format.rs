@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use icu::{
-    locid::Locale,
-    plurals::{PluralCategory, PluralOperands, PluralRuleType, PluralRules},
+    locale::Locale,
+    plurals::{PluralCategory, PluralOperands, PluralRuleType, PluralRules, PluralRulesOptions},
 };
-use icu_decimal::FixedDecimalFormatter;
+use icu_decimal::DecimalFormatter;
 
 use crate::{placeholder, Block, ParamValue, OTHER};
 
@@ -14,7 +14,7 @@ pub(crate) struct Formatter<'a> {
     initial_literals: &'a Vec<String>,
     parsed_pattern: &'a Vec<Block>,
     ignore_pound: bool,
-    fdf: Option<FixedDecimalFormatter>,
+    fdf: Option<DecimalFormatter>,
     plural_rules: Option<PluralRules>,
 }
 
@@ -35,17 +35,20 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn fixed_decimal_formatter(&mut self) -> &FixedDecimalFormatter {
+    fn fixed_decimal_formatter(&mut self) -> &DecimalFormatter {
         self.fdf.get_or_insert_with(|| {
-            FixedDecimalFormatter::try_new(&self.locale.into(), Default::default())
+            DecimalFormatter::try_new(self.locale.into(), Default::default())
                 .expect("missing locale")
         })
     }
 
     fn get_plural_rules(&mut self) -> &PluralRules {
         self.plural_rules.get_or_insert_with(|| {
-            PluralRules::try_new(&self.locale.into(), PluralRuleType::Cardinal)
-                .expect("missing locale")
+            PluralRules::try_new(
+                self.locale.into(),
+                PluralRulesOptions::default().with_type(PluralRuleType::Cardinal),
+            )
+            .expect("missing locale")
         })
     }
 

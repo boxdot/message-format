@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use format::Formatter;
-use icu::locid::Locale;
+use icu::locale::Locale;
 use param::{ARGUMENT_NAME, ARGUMENT_OFFSET, OTHER};
 use regex::{Captures, Regex};
 
@@ -392,7 +392,8 @@ enum ElementType {
 
 #[cfg(test)]
 mod tests {
-    use icu::locid::locale;
+
+    use icu::locale::locale;
 
     use super::*;
 
