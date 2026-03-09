@@ -35,6 +35,9 @@ pub enum ParseError {
 
     /// missing 'other' clause in {block} block
     MissingOtherClause { block: BlockKind },
+
+    /// invalid offset value in plural block
+    InvalidOffset,
 }
 
 impl std::error::Error for ParseError {}

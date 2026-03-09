@@ -71,10 +71,6 @@ impl<'a> Formatter<'a> {
         );
         let mut message = message_parts.join("");
 
-        if !self.ignore_pound {
-            assert!(!message.contains('#'), "not all # were replaced");
-        }
-
         while let Some(literal) = literals.pop() {
             let placeholder = placeholder(literals.len());
             message = message.replacen(&placeholder, &literal, 1);
@@ -141,7 +137,7 @@ impl<'a> Formatter<'a> {
             .get(&"argumentName".to_owned().into())
             .and_then(|b| b.first())
         else {
-            panic!("invalid argument name");
+            unreachable!("argumentName is always inserted by the parser");
         };
 
         let Some(param) = named_parameters.get(argument_name) else {
@@ -153,7 +149,7 @@ impl<'a> Formatter<'a> {
             .get(param)
             .or_else(|| parsed_blocks.get(&OTHER))
         else {
-            panic!("Invalid option or missing other option for select block");
+            unreachable!("select block always has an 'other' clause, validated by the parser");
         };
 
         self.format_block(option, named_parameters, literals, result);
@@ -170,13 +166,13 @@ impl<'a> Formatter<'a> {
             .get(&"argumentName".into())
             .and_then(|b| b.first())
         else {
-            panic!("invalid argument name");
+            unreachable!("argumentName is always inserted by the parser");
         };
         let Some(Block::String(argument_offset)) = parsed_blocks
             .get(&"argumentOffset".into())
             .and_then(|b| b.first())
         else {
-            panic!("invalid argument offset");
+            unreachable!("argumentOffset is always inserted by the parser");
         };
 
         let Some(plural_value) = named_parameters.get(argument_name) else {
@@ -216,7 +212,7 @@ impl<'a> Formatter<'a> {
                     .get(&item.to_owned().into())
                     .or_else(|| parsed_blocks.get(&OTHER))
                 else {
-                    panic!("Invalid option or missing other option for plural block");
+                    unreachable!("plural block always has an 'other' clause, validated by the parser");
                 };
                 option
             }

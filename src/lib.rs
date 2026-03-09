@@ -245,7 +245,9 @@ impl<'l> MessageFormat<'l> {
 
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
-                ElementType::String => unreachable!(),
+                ElementType::String => {
+                    return Err(ParseError::MissingBlockValue { block: BlockKind::Select });
+                }
             };
 
             let key = WHITESPACES_RE.replace_all(key, "");
@@ -269,14 +271,21 @@ impl<'l> MessageFormat<'l> {
         pattern: &str,
     ) -> Result<HashMap<ParamValue, Vec<Block>>, ParseError> {
         let mut argument_name = None;
-        let mut argument_offset = 0;
+        let mut argument_offset = 0i64;
+        let mut offset_overflow = false;
         let pattern = PLURAL_BLOCK_RE.replace(pattern, |caps: &Captures| {
             argument_name = Some(caps[1].to_owned());
             if let Some(offset) = caps.get(2) {
-                argument_offset = offset.as_str().parse().expect("invalid plural regex");
+                match offset.as_str().parse() {
+                    Ok(v) => argument_offset = v,
+                    Err(_) => offset_overflow = true,
+                }
             }
             ""
         });
+        if offset_overflow {
+            return Err(ParseError::InvalidOffset);
+        }
 
         let mut result = HashMap::new();
         result.insert(
@@ -307,7 +316,9 @@ impl<'l> MessageFormat<'l> {
 
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
-                ElementType::String => unreachable!(),
+                ElementType::String => {
+                    return Err(ParseError::MissingBlockValue { block: BlockKind::Plural });
+                }
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
@@ -362,7 +373,9 @@ impl<'l> MessageFormat<'l> {
 
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
-                ElementType::String => unreachable!(),
+                ElementType::String => {
+                    return Err(ParseError::MissingBlockValue { block: BlockKind::Ordinal });
+                }
             };
 
             let key = KV_RE.replace_all(key, |caps: &Captures| caps[1].to_owned());
