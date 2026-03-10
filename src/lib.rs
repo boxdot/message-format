@@ -246,7 +246,9 @@ impl<'l> MessageFormat<'l> {
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
                 ElementType::String => {
-                    return Err(ParseError::MissingBlockValue { block: BlockKind::Select });
+                    return Err(ParseError::MissingBlockValue {
+                        block: BlockKind::Select,
+                    });
                 }
             };
 
@@ -317,7 +319,9 @@ impl<'l> MessageFormat<'l> {
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
                 ElementType::String => {
-                    return Err(ParseError::MissingBlockValue { block: BlockKind::Plural });
+                    return Err(ParseError::MissingBlockValue {
+                        block: BlockKind::Plural,
+                    });
                 }
             };
 
@@ -374,7 +378,9 @@ impl<'l> MessageFormat<'l> {
             let value = match part.typ {
                 ElementType::Block => self.parse_block(part.value.clone())?,
                 ElementType::String => {
-                    return Err(ParseError::MissingBlockValue { block: BlockKind::Ordinal });
+                    return Err(ParseError::MissingBlockValue {
+                        block: BlockKind::Ordinal,
+                    });
                 }
             };
 

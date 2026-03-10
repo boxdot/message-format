@@ -212,7 +212,9 @@ impl<'a> Formatter<'a> {
                     .get(&item.to_owned().into())
                     .or_else(|| parsed_blocks.get(&OTHER))
                 else {
-                    unreachable!("plural block always has an 'other' clause, validated by the parser");
+                    unreachable!(
+                        "plural block always has an 'other' clause, validated by the parser"
+                    );
                 };
                 option
             }
